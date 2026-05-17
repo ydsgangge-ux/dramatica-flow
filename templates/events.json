@@ -1,0 +1,61 @@
+{
+  "_comment": "事件库 — 填写后运行 df setup events <book_id> 加载。种子事件会触发故事生成。",
+  "seed_event": "event_divorce",
+  "events": [
+    {
+      "id": "event_divorce",
+      "name": "退婚羞辱",
+      "description": "未婚妻慕雪当众退婚，声称林尘是废物废灵根，不配与慕家联姻，当场与他人定亲",
+      "preconditions": [],
+      "effects": [
+        "lin_chen:蒙受公开羞辱",
+        "lin_chen:立下三年之约",
+        "lin_chen:决心变强",
+        "relationship:lin_chen-mu_xue=-80"
+      ],
+      "triggers": ["event_mountain_departure"],
+      "suggested_act": 1,
+      "suggested_function": "inciting"
+    },
+    {
+      "id": "event_mountain_departure",
+      "name": "独闯青峰山",
+      "description": "林尘独自前往青峰山修炼，与妖兽搏命，偶然触发封印灵根内的古老传承",
+      "preconditions": ["lin_chen:立下三年之约"],
+      "effects": [
+        "lin_chen:发现封印灵根的秘密",
+        "lin_chen:修炼速度质变"
+      ],
+      "triggers": ["event_first_breakthrough"],
+      "suggested_act": 1,
+      "suggested_function": "turning"
+    },
+    {
+      "id": "event_first_breakthrough",
+      "name": "首次突破",
+      "description": "林尘在青峰山突破聚气境，速度远超同龄人，开始引发有心人注意",
+      "preconditions": ["lin_chen:发现封印灵根的秘密"],
+      "effects": [
+        "lin_chen:实力公开化",
+        "mu_family:开始关注林尘"
+      ],
+      "triggers": [],
+      "suggested_act": 1,
+      "suggested_function": "consequence"
+    },
+    {
+      "id": "event_midpoint_confrontation",
+      "name": "中点对决",
+      "description": "林尘在城内公开场合与慕家高手正面交锋，以弱胜强，打破所有人的预期",
+      "preconditions": ["lin_chen:实力公开化"],
+      "effects": [
+        "lin_chen:声名鹊起",
+        "mu_family:视林尘为威胁",
+        "relationship:lin_chen-mu_xue=+20（慕雪开始动摇）"
+      ],
+      "triggers": [],
+      "suggested_act": 2,
+      "suggested_function": "midpoint"
+    }
+  ]
+}

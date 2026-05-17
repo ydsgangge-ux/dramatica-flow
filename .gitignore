@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 环境变量（含 API Key）
+.env
+
+# 书籍数据（用户个人内容）
+books/
+
+# 调试文件
+_debug.txt
+_check.txt
+_check2.txt
+server_err.txt
+server_log.txt
+deepseek_json_*.json
+test_python.bat
+
+# 生成的启动脚本（由 install.bat 生成）
+launch_web.bat
+start_web_ui.bat
+
+# 过时的脚本
+测试启动.bat
+启动说明.txt
+
+# 系统文件
+Thumbs.db
+Desktop.ini
+.DS_Store
+codebuddy/
+
+# 服务器日志
+_server_stderr.log
+_server_stdout.log
+
+# codebuddy 数据
+.codebuddy/

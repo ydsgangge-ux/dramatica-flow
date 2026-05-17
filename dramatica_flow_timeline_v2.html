@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>多线叙事时间线 — Dramatica-Flow</title>
+<style>
+:root {
+  --bg-dark:#0d1117; --bg:#161b22; --bg2:#1c2333; --bg3:#21293a;
+  --surface:#1c2333; --surface2:#242d3f; --surface3:#2a3447;
+  --border:#30363d; --border2:#444c56; --border3:#58647a;
+  --text:#e6edf3; --text2:#8b949e; --text3:#6e7681;
+  --blue:#58a6ff; --blue-bg:rgba(88,166,255,.12); --blue-dim:rgba(88,166,255,.06);
+  --purple:#bc8cff; --purple-bg:rgba(188,140,255,.12);
+  --cyan:#39d2c0; --cyan-bg:rgba(57,210,192,.12);
+  --orange:#f0883e; --orange-bg:rgba(240,136,62,.12);
+  --green:#3fb950; --green-bg:rgba(63,185,80,.12);
+  --red:#f85149; --red-bg:rgba(248,81,73,.12);
+  --yellow:#d29922; --yellow-bg:rgba(210,153,34,.12);
+  --pink:#ff7eb3; --pink-bg:rgba(255,126,179,.12);
+  --radius:6px; --radius-lg:10px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;font-size:13px;color:var(--text);background:var(--bg-dark);line-height:1.5;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+/* ── 顶栏 ── */
+.topbar{height:46px;background:var(--bg);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 16px;gap:12px;flex-shrink:0;z-index:10}
+.brand{font-size:14px;font-weight:700;color:var(--text);letter-spacing:-.3px}.brand em{color:var(--blue);font-style:normal}
+.sep{width:1px;height:20px;background:var(--border)}
+.topbar-sub{font-size:12px;color:var(--text3)}
+.topbar-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+.bk-select{padding:5px 10px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;min-width:160px;cursor:pointer;outline:none}
+.bk-select:focus{border-color:var(--blue)}
+.btn{font-size:12px;padding:5px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);color:var(--text);cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;transition:all .12s}
+.btn:hover{background:var(--surface2);border-color:var(--border2)}
+.btn-primary{background:var(--blue);border-color:var(--blue);color:#000;font-weight:600}
+.btn-primary:hover{opacity:.88}
+.btn-sm{padding:3px 9px;font-size:11px}
+.btn-block{width:100%;justify-content:center}
+.btn-ghost{background:transparent;border-color:transparent;color:var(--text2)}
+.btn-ghost:hover{background:var(--surface);color:var(--text)}
+
+/* ── 主体 ── */
+.body{flex:1;display:flex;overflow:hidden}
+
+/* ── 左侧线程列表 ── */
+.sidebar{width:240px;background:var(--bg);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0}
+.sidebar-hd{padding:12px 14px;font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.badge-count{font-size:10px;background:var(--surface2);color:var(--text2);padding:1px 7px;border-radius:10px;font-weight:500}
+.thread-list{flex:1;overflow-y:auto;padding:8px}
+.thread-item{padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius);margin-bottom:5px;cursor:pointer;transition:all .12s;position:relative}
+.thread-item:hover{border-color:var(--border2);background:var(--surface)}
+.thread-item.active{border-color:var(--blue);background:var(--blue-dim)}
+.thread-item.active::before{content:'';position:absolute;left:0;top:4px;bottom:4px;width:2px;background:var(--blue);border-radius:0 2px 2px 0}
+.ti-name{font-size:12px;font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.ti-meta{font-size:11px;color:var(--text3);display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.thread-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.type-badge{font-size:10px;padding:1px 6px;border-radius:8px;font-weight:600}
+.tb-main{background:var(--blue-bg);color:var(--blue)}
+.tb-subplot{background:var(--purple-bg);color:var(--purple)}
+.tb-parallel{background:var(--cyan-bg);color:var(--cyan)}
+.tb-flashback{background:var(--orange-bg);color:var(--orange)}
+.tb-active{background:var(--green-bg);color:var(--green)}
+.tb-dormant{background:var(--yellow-bg);color:var(--yellow)}
+.tb-resolved{background:var(--surface2);color:var(--text3)}
+.sidebar-ft{padding:10px;border-top:1px solid var(--border)}
+
+/* ── 中央泳道 ── */
+.center{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.center-hd{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-shrink:0;background:var(--bg)}
+.center-title{font-size:13px;font-weight:600;white-space:nowrap}
+.chips{display:flex;gap:5px;flex-wrap:wrap}
+.chip{font-size:11px;padding:3px 10px;border-radius:10px;cursor:pointer;border:1px solid var(--border);color:var(--text3);transition:all .12s;white-space:nowrap}
+.chip:hover{border-color:var(--border2);color:var(--text2)}
+.chip.on{background:var(--blue-bg);color:var(--blue);border-color:rgba(88,166,255,.3)}
+.center-hd-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.zoom-wrap{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3)}
+.zoom-input{width:60px;padding:3px 8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:11px;text-align:center}
+
+/* ── 泳道图区域 ── */
+.swimlane-outer{flex:1;overflow:auto;padding:14px 16px}
+.swimlane-inner{min-width:900px}
+
+/* ── 章节标尺 ── */
+.ruler-row{display:flex;margin-bottom:6px}
+.ruler-label-cell{width:160px;flex-shrink:0}
+.ruler-track{flex:1;position:relative;height:20px;overflow:hidden}
+.ruler-mark{position:absolute;transform:translateX(-50%);font-size:10px;color:var(--text3);white-space:nowrap;user-select:none}
+.ruler-mark::before{content:'';position:absolute;left:50%;top:-4px;width:1px;height:4px;background:var(--border2)}
+
+/* ── 幕分区背景 ── */
+.act-bg{position:absolute;top:0;bottom:0;border-right:1px dashed var(--border);pointer-events:none}
+.act-label{position:absolute;font-size:9px;color:var(--text3);top:2px;transform:translateX(-50%);user-select:none;background:var(--bg-dark);padding:0 4px;border-radius:3px}
+
+/* ── 泳道行 ── */
+.lane-row{display:flex;align-items:center;margin-bottom:6px;min-height:38px}
+.lane-label{width:160px;flex-shrink:0;font-size:12px;font-weight:600;padding-right:12px;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:default}
+.lane-track{flex:1;position:relative;height:34px;background:var(--surface);border-radius:4px;border:1px solid var(--border);overflow:visible}
+.lane-track.highlight{border-color:var(--blue);background:var(--blue-dim)}
+.lane-now{position:absolute;top:-4px;bottom:-4px;width:1px;background:var(--green);opacity:.5;pointer-events:none;z-index:1}
+.lane-now::after{content:'▼';position:absolute;top:-2px;left:50%;transform:translateX(-50%);font-size:6px;color:var(--green)}
+
+/* ── 事件方块 ── */
+.ev{position:absolute;top:3px;height:28px;border-radius:4px;cursor:pointer;display:flex;align-items:center;padding:0 7px;font-size:10px;font-weight:600;color:#fff;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;z-index:2;transition:transform .1s,box-shadow .1s;min-width:8px}
+.ev:hover{transform:scaleY(1.18);box-shadow:0 3px 10px rgba(0,0,0,.5);z-index:20}
+.ev.sel{outline:2px solid #fff;outline-offset:1px;z-index:30}
+.ev-pos{background:#1a6fd4}
+.ev-emotion{background:#b83c3c}
+.ev-info{background:#1a7a32}
+.ev-conflict{background:#c06010}
+.ev-other{background:#5a3aa0}
+.ev-key{background:linear-gradient(135deg,#c06010,#b83c3c)}
+
+/* ── 事件颜色 tooltip ── */
+.ev-legend{display:flex;gap:10px;padding:8px 14px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--bg);flex-wrap:wrap}
+.ev-legend-item{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text3)}
+.ev-legend-dot{width:10px;height:10px;border-radius:3px}
+
+/* ── 右侧详情 ── */
+.detail{width:280px;background:var(--bg);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0}
+.detail-hd{padding:12px 14px;font-size:12px;font-weight:600;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.detail-body{flex:1;overflow-y:auto;padding:14px}
+.detail-empty{color:var(--text3);font-size:12px;text-align:center;padding:40px 16px;line-height:1.8}
+.df{margin-bottom:12px}
+.df-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px}
+.df-val{font-size:12px;color:var(--text);line-height:1.5}
+.df-val.colored{font-weight:600}
+.detail-ft{padding:10px 14px;border-top:1px solid var(--border)}
+
+/* ── 底部面板 ── */
+.bottom{height:180px;border-top:1px solid var(--border);display:flex;flex-shrink:0;background:var(--bg)}
+.bottom-tabs{width:110px;border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0}
+.btab{padding:9px 10px;font-size:11px;color:var(--text3);cursor:pointer;border-bottom:1px solid var(--border);transition:all .12s;display:flex;align-items:center;gap:6px;line-height:1.3}
+.btab:hover{color:var(--text2);background:var(--surface)}
+.btab.on{background:var(--surface);color:var(--blue);border-left:2px solid var(--blue)}
+.btab-badge{font-size:10px;background:var(--yellow-bg);color:var(--yellow);padding:1px 5px;border-radius:8px;font-weight:600;margin-left:auto}
+.bottom-body{flex:1;overflow-y:auto;padding:10px 14px}
+.causal-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px}
+.causal-row:last-child{border-bottom:none}
+.causal-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.warn-row{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--yellow-bg);border:1px solid rgba(210,153,34,.3);border-radius:var(--radius);margin-bottom:5px;font-size:11px}
+.warn-badge{background:var(--yellow);color:#000;font-size:10px;padding:1px 6px;border-radius:8px;font-weight:700;flex-shrink:0}
+
+/* ── 空态 ── */
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px;text-align:center;color:var(--text3)}
+.empty-icon{font-size:40px;margin-bottom:14px;opacity:.4}
+.empty-title{font-size:14px;font-weight:600;color:var(--text2);margin-bottom:6px}
+.empty-desc{font-size:12px;max-width:320px;line-height:1.7}
+
+/* ── 模态框 ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:200;display:flex;align-items:center;justify-content:center}
+.modal{background:var(--bg);border:1px solid var(--border2);border-radius:12px;width:500px;max-height:82vh;overflow-y:auto}
+.modal-hd{padding:16px 20px;font-size:14px;font-weight:600;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.modal-close{background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer;padding:0 4px;line-height:1}
+.modal-close:hover{color:var(--text)}
+.modal-body{padding:18px 20px}
+.modal-ft{padding:12px 20px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end}
+.fg{margin-bottom:13px}
+.flabel{display:block;font-size:11px;font-weight:500;color:var(--text2);margin-bottom:4px}
+.finput,.fselect,.ftextarea{width:100%;padding:7px 11px;background:var(--bg-dark);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;font-family:inherit;outline:none}
+.finput:focus,.fselect:focus,.ftextarea:focus{border-color:var(--blue)}
+.ftextarea{min-height:56px;resize:vertical}
+.frow{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.fhint{font-size:10px;color:var(--text3);margin-top:3px}
+
+/* ── 滚动条 ── */
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--border2)}
+
+/* ── 加载 ── */
+.loader{display:flex;align-items:center;gap:10px;padding:40px;color:var(--text3);font-size:12px}
+.spin{width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── 提示 tooltip ── */
+.tooltip-wrap{position:relative}
+</style>
+</head>
+<body>
+
+<!-- 顶栏 -->
+<div class="topbar">
+  <div class="brand"><em>Dramatica</em>-Flow</div>
+  <div class="sep"></div>
+  <div class="topbar-sub">多线叙事时间线</div>
+  <div class="topbar-right">
+    <select class="bk-select" id="bk-sel" onchange="loadBook(this.value)">
+      <option value="">-- 选择书籍 --</option>
+      <option value="demo">吞天魔帝（演示）</option>
+    </select>
+    <select class="bk-select" id="ch-sel" style="min-width:100px">
+      <option value="">提取章节</option>
+    </select>
+    <button class="btn btn-primary" onclick="extractData()" title="从章节正文提取时间线数据（需后端）">⚡ 提取</button>
+  </div>
+</div>
+
+<!-- 主体 -->
+<div class="body">
+
+  <!-- 左侧：线程列表 -->
+  <div class="sidebar">
+    <div class="sidebar-hd">
+      叙事线程
+      <span class="badge-count" id="thread-count">0</span>
+    </div>
+    <div class="thread-list" id="thread-list">
+      <div class="detail-empty" style="padding:24px 16px">选择书籍后显示</div>
+    </div>
+    <div class="sidebar-ft">
+      <button class="btn btn-primary btn-block" onclick="showAddThread()">＋ 添加线程</button>
+    </div>
+  </div>
+
+  <!-- 中央 -->
+  <div class="center">
+    <div class="center-hd">
+      <div class="center-title">泳道时间线</div>
+      <div class="chips" id="filter-chips">
+        <div class="chip on" data-f="all" onclick="setFilter('all',this)">全部</div>
+        <div class="chip" data-f="position" onclick="setFilter('position',this)">位置</div>
+        <div class="chip" data-f="emotion" onclick="setFilter('emotion',this)">情感</div>
+        <div class="chip" data-f="info" onclick="setFilter('info',this)">信息</div>
+        <div class="chip" data-f="conflict" onclick="setFilter('conflict',this)">冲突</div>
+        <div class="chip" data-f="key" onclick="setFilter('key',this)">关键节点</div>
+      </div>
+      <div class="center-hd-right">
+        <div class="zoom-wrap">
+          缩放
+          <input class="zoom-input" id="zoom-input" type="number" value="100" min="40" max="300" step="10" onchange="setZoom(this.value)">%
+        </div>
+      </div>
+    </div>
+
+    <!-- 图例 -->
+    <div class="ev-legend">
+      <div class="ev-legend-item"><div class="ev-legend-dot" style="background:#1a6fd4"></div>位置变化</div>
+      <div class="ev-legend-item"><div class="ev-legend-dot" style="background:#b83c3c"></div>情感转变</div>
+      <div class="ev-legend-item"><div class="ev-legend-dot" style="background:#1a7a32"></div>信息揭示</div>
+      <div class="ev-legend-item"><div class="ev-legend-dot" style="background:#c06010"></div>核心冲突</div>
+      <div class="ev-legend-item"><div class="ev-legend-dot" style="background:linear-gradient(135deg,#c06010,#b83c3c)"></div>关键节点</div>
+      <div class="ev-legend-item"><div class="ev-legend-dot" style="background:#5a3aa0"></div>其他</div>
+    </div>
+
+    <!-- 泳道图 -->
+    <div class="swimlane-outer" id="swimlane-outer">
+      <div class="empty" id="empty-state">
+        <div class="empty-icon">〰</div>
+        <div class="empty-title">选择书籍开始</div>
+        <div class="empty-desc">从右上角下拉菜单选择书籍，即可查看多线叙事泳道图。演示模式包含完整示例数据。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右侧详情 -->
+  <div class="detail">
+    <div class="detail-hd">
+      事件详情
+      <button class="btn btn-ghost btn-sm" id="detail-close-btn" onclick="closeDetail()" style="display:none">✕</button>
+    </div>
+    <div class="detail-body" id="detail-body">
+      <div class="detail-empty">点击泳道中的<br>事件方块查看详情</div>
+    </div>
+    <div class="detail-ft" id="detail-ft" style="display:none">
+      <button class="btn btn-sm btn-block" onclick="closeDetail()">关闭</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- 底部：因果链 + 掉线预警 -->
+<div class="bottom">
+  <div class="bottom-tabs">
+    <div class="btab on" id="btab-causal" onclick="switchTab('causal')">
+      跨线因果
+      <span class="btab-badge" id="causal-badge" style="display:none"></span>
+    </div>
+    <div class="btab" id="btab-warning" onclick="switchTab('warning')">
+      掉线预警
+      <span class="btab-badge" id="warning-badge" style="display:none"></span>
+    </div>
+  </div>
+  <div class="bottom-body" id="bottom-body">
+    <div class="detail-empty" style="padding:20px">选择书籍后加载</div>
+  </div>
+</div>
+
+<!-- 添加线程模态框 -->
+<div class="modal-overlay" id="thread-modal" style="display:none" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-hd">
+      <span id="modal-title">添加叙事线程</span>
+      <button class="modal-close" onclick="closeModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="frow">
+        <div class="fg">
+          <label class="flabel">线程 ID *</label>
+          <input class="finput" id="tf-id" placeholder="thread_subplot_a">
+          <div class="fhint">英文，唯一标识符</div>
+        </div>
+        <div class="fg">
+          <label class="flabel">名称 *</label>
+          <input class="finput" id="tf-name" placeholder="慕雪线">
+        </div>
+      </div>
+      <div class="frow">
+        <div class="fg">
+          <label class="flabel">类型</label>
+          <select class="fselect" id="tf-type">
+            <option value="main">主线 main</option>
+            <option value="subplot" selected>支线 subplot</option>
+            <option value="parallel">并行 parallel</option>
+            <option value="flashback">闪回 flashback</option>
+          </select>
+        </div>
+        <div class="fg">
+          <label class="flabel">权重 (0.1–1.0)</label>
+          <input class="finput" id="tf-weight" type="number" step="0.1" min="0.1" max="1.0" value="0.7">
+          <div class="fhint">影响章节字数分配</div>
+        </div>
+      </div>
+      <div class="frow">
+        <div class="fg">
+          <label class="flabel">视角角色 ID</label>
+          <input class="finput" id="tf-pov" placeholder="mu_xue">
+        </div>
+        <div class="fg">
+          <label class="flabel">参与角色（逗号分隔）</label>
+          <input class="finput" id="tf-chars" placeholder="lin_chen, mu_xue">
+        </div>
+      </div>
+      <div class="fg">
+        <label class="flabel">叙事目标</label>
+        <textarea class="ftextarea" id="tf-goal" placeholder="这条线程要解决什么核心问题？"></textarea>
+      </div>
+      <div class="fg">
+        <label class="flabel">成长弧线</label>
+        <input class="finput" id="tf-arc" placeholder="从……到……">
+      </div>
+      <div class="frow">
+        <div class="fg">
+          <label class="flabel">起始章节</label>
+          <input class="finput" id="tf-start" type="number" min="1" value="1">
+        </div>
+        <div class="fg">
+          <label class="flabel">合并章节（可选）</label>
+          <input class="finput" id="tf-merge" type="number" min="1" placeholder="留空表示不限">
+        </div>
+      </div>
+      <div class="fg">
+        <label class="flabel">结尾钩子</label>
+        <input class="finput" id="tf-hook" placeholder="线程结束时的悬念">
+      </div>
+    </div>
+    <div class="modal-ft">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary" onclick="saveThread()">创建线程</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// DEMO 数据（内嵌，无需后端即可预览）
+// ═══════════════════════════════════════════════════════
+const DEMO = {
+  book: { id:'demo', title:'吞天魔帝', current_chapter:31, target_chapters:90 },
+  threads: [
+    { id:'thread_main',     name:'林尘主线',  type:'main',      weight:1.0,  status:'active',   pov_character_id:'lin_chen',  start_chapter:1,  last_active_chapter:31,
+      goal:'逆天改命，三年之约兑现', growth_arc:'从废物到强者' },
+    { id:'thread_mu',       name:'慕雪线',    type:'subplot',   weight:0.6,  status:'active',   pov_character_id:'mu_xue',    start_chapter:1,  last_active_chapter:29,
+      goal:'慕雪内心的动摇与抉择', growth_arc:'从冷漠到矛盾' },
+    { id:'thread_family',   name:'林家内部',  type:'subplot',   weight:0.5,  status:'dormant',  pov_character_id:'lin_father', start_chapter:3,  last_active_chapter:18,
+      goal:'家族内部的暗流与背叛', growth_arc:'从信任到揭露' },
+    { id:'thread_secret',   name:'传承之谜',  type:'parallel',  weight:0.4,  status:'active',   pov_character_id:'lin_chen',  start_chapter:3,  last_active_chapter:30,
+      goal:'古老传承的真相与封印', growth_arc:'从无知到觉醒' },
+    { id:'thread_flashback', name:'父亲往事', type:'flashback', weight:0.3,  status:'dormant',  pov_character_id:'lin_father', start_chapter:7,  last_active_chapter:23,
+      goal:'父亲封印灵根的真相', growth_arc:'揭示过去的牺牲' },
+    { id:'thread_ally',     name:'盟友线',   type:'subplot',   weight:0.45, status:'active',   pov_character_id:'chu_ming',  start_chapter:18, last_active_chapter:31,
+      goal:'林尘与盟友楚明的合作关系', growth_arc:'从陌生人到信任' },
+  ],
+  timeline: [
+    // ── 林尘主线 ──
+    {thread_id:'thread_main', chapter:1,  type:'conflict', action:'退婚羞辱，林尘当众蒙羞',        character_id:'lin_chen', is_key:true},
+    {thread_id:'thread_main', chapter:1,  type:'emotion',  action:'立下三年之约，情绪从屈辱到坚定', character_id:'lin_chen'},
+    {thread_id:'thread_main', chapter:2,  type:'position', action:'林尘离开林家演武场，独闯青峰山', character_id:'lin_chen'},
+    {thread_id:'thread_main', chapter:3,  type:'info',     action:'触碰碎玉，传承开始觉醒',        character_id:'lin_chen', is_key:true},
+    {thread_id:'thread_main', chapter:5,  type:'info',     action:'发现封印灵根之谜，修炼速度质变', character_id:'lin_chen'},
+    {thread_id:'thread_main', chapter:7,  type:'conflict', action:'林家大比，以弱胜强',            character_id:'lin_chen', is_key:true},
+    {thread_id:'thread_main', chapter:8,  type:'emotion',  action:'大比获胜，林尘开始建立自信',    character_id:'lin_chen'},
+    {thread_id:'thread_main', chapter:12, type:'position', action:'进入城郊秘境探索',              character_id:'lin_chen'},
+    {thread_id:'thread_main', chapter:14, type:'conflict', action:'秘境被暗算，陷入绝境',          character_id:'lin_chen', is_key:true},
+    {thread_id:'thread_main', chapter:15, type:'emotion',  action:'血脉觉醒，从恐惧到震怒',       character_id:'lin_chen', is_key:true},
+    {thread_id:'thread_main', chapter:18, type:'position', action:'离开秘境，与楚明结盟',          character_id:'lin_chen'},
+    {thread_id:'thread_main', chapter:20, type:'info',     action:'发现林家内部有人暗通慕家',      character_id:'lin_chen'},
+    {thread_id:'thread_main', chapter:23, type:'info',     action:'父亲密信揭示封印真相',          character_id:'lin_chen', is_key:true},
+    {thread_id:'thread_main', chapter:25, type:'conflict', action:'慕家发现林尘实力暴露，施压',    character_id:'lin_chen'},
+    {thread_id:'thread_main', chapter:28, type:'position', action:'强行闯入慕家大院回击',          character_id:'lin_chen'},
+    {thread_id:'thread_main', chapter:30, type:'conflict', action:'慕家主亲自出手，险胜',          character_id:'lin_chen', is_key:true},
+    {thread_id:'thread_main', chapter:31, type:'emotion',  action:'三年之约倒计时30天，坚定决心', character_id:'lin_chen'},
+    // ── 慕雪线 ──
+    {thread_id:'thread_mu', chapter:1,  type:'emotion',  action:'慕雪冷漠宣布退婚',               character_id:'mu_xue'},
+    {thread_id:'thread_mu', chapter:8,  type:'emotion',  action:'慕雪首次对林尘表现出意外',        character_id:'mu_xue'},
+    {thread_id:'thread_mu', chapter:14, type:'info',     action:'慕雪暗中获悉家族设局之事',       character_id:'mu_xue'},
+    {thread_id:'thread_mu', chapter:20, type:'emotion',  action:'慕雪开始动摇，内心矛盾加剧',      character_id:'mu_xue'},
+    {thread_id:'thread_mu', chapter:27, type:'conflict', action:'慕雪在父命与内心之间撕裂',        character_id:'mu_xue', is_key:true},
+    {thread_id:'thread_mu', chapter:29, type:'info',     action:'慕雪首次公开质疑家族的判断',      character_id:'mu_xue'},
+    // ── 林家内部 ──
+    {thread_id:'thread_family', chapter:3,  type:'info',    action:'林父刻意回避林尘提起修炼之事',  character_id:'lin_father'},
+    {thread_id:'thread_family', chapter:7,  type:'conflict','action':'大比后家族内部对林尘态度分裂', character_id:'lin_family'},
+    {thread_id:'thread_family', chapter:10, type:'info',    action:'林尘察觉家族内有人监视自己',    character_id:'lin_chen'},
+    {thread_id:'thread_family', chapter:18, type:'conflict','action':'内奸被部分揭露，家族震动',     character_id:'lin_family', is_key:true},
+    // ── 传承之谜 ──
+    {thread_id:'thread_secret', chapter:3,  type:'info',    action:'碎玉触发古老铭文残影',          character_id:'lin_chen'},
+    {thread_id:'thread_secret', chapter:9,  type:'info',    action:'传承深处发现第一个功法碎片',    character_id:'lin_chen'},
+    {thread_id:'thread_secret', chapter:15, type:'info',    action:'血脉觉醒与传承合一，封印松动', character_id:'lin_chen', is_key:true},
+    {thread_id:'thread_secret', chapter:22, type:'info',    action:'传承来源指向古代战场遗迹',      character_id:'lin_chen'},
+    {thread_id:'thread_secret', chapter:30, type:'info',    action:'传承与父亲封印同出一源',        character_id:'lin_chen', is_key:true},
+    // ── 父亲往事 ──
+    {thread_id:'thread_flashback', chapter:7,  type:'info', action:'梦境中出现父亲身影（第一次）', character_id:'lin_father'},
+    {thread_id:'thread_flashback', chapter:16, type:'info', action:'秘境遗迹的气息与父亲有关',     character_id:'lin_father'},
+    {thread_id:'thread_flashback', chapter:23, type:'info', action:'密信揭示：父亲主动封印灵根', character_id:'lin_father', is_key:true},
+    // ── 盟友线 ──
+    {thread_id:'thread_ally', chapter:18, type:'info',     action:'楚明解救林尘脱离秘境困境',     character_id:'chu_ming'},
+    {thread_id:'thread_ally', chapter:20, type:'conflict', action:'楚明透露自己也在追查传承来源', character_id:'chu_ming'},
+    {thread_id:'thread_ally', chapter:25, type:'conflict', action:'联手反制慕家监视',              character_id:'chu_ming'},
+    {thread_id:'thread_ally', chapter:31, type:'info',     action:'楚明与林尘确认共同目标',       character_id:'chu_ming'},
+  ],
+  causal_links: [
+    {source_thread_id:'thread_main',     target_thread_id:'thread_mu',       description:'退婚事件触发慕雪线',             source_chapter:1,  target_chapter:1},
+    {source_thread_id:'thread_main',     target_thread_id:'thread_family',   description:'大比逆袭暴露家族内奸',           source_chapter:7,  target_chapter:10},
+    {source_thread_id:'thread_main',     target_thread_id:'thread_secret',   description:'血脉觉醒激活传承核心层',         source_chapter:15, target_chapter:15},
+    {source_thread_id:'thread_secret',   target_thread_id:'thread_flashback','description':'传承气息指向父亲往事',          source_chapter:22, target_chapter:23},
+    {source_thread_id:'thread_family',   target_thread_id:'thread_main',     description:'内奸线索加速林尘警觉',           source_chapter:18, target_chapter:20},
+    {source_thread_id:'thread_main',     target_thread_id:'thread_ally',     description:'秘境绝境触发楚明登场',           source_chapter:14, target_chapter:18},
+    {source_thread_id:'thread_mu',       target_thread_id:'thread_main',     description:'慕雪动摇影响慕家对林尘的行动策略',source_chapter:20, target_chapter:25},
+  ],
+  dormant: [
+    { id:'thread_family',   name:'林家内部', last_active_chapter:18, gap:13 },
+    { id:'thread_flashback', name:'父亲往事', last_active_chapter:23, gap:8 },
+  ],
+};
+
+// ═══════════════════════════════════════════════════════
+// 全局状态
+// ═══════════════════════════════════════════════════════
+let state = {
+  bookId: '',
+  threads: [],
+  timeline: [],
+  causal: [],
+  dormant: [],
+  currentChapter: 0,
+  maxChapters: 90,
+  filter: 'all',
+  zoom: 100,
+  selectedIdx: null,
+  activeTab: 'causal',
+  highlightThread: null,
+};
+
+// ═══════════════════════════════════════════════════════
+// 初始化
+// ═══════════════════════════════════════════════════════
+async function init() {
+  try {
+    const resp = await fetch('/api/books');
+    const books = await resp.json();
+    const sel = document.getElementById('bk-sel');
+    books.forEach(b => {
+      const opt = document.createElement('option');
+      opt.value = b.id; opt.textContent = b.title;
+      sel.appendChild(opt);
+    });
+  } catch(e) { /* 没有后端，用演示数据 */ }
+
+  // 自动加载演示数据
+  const sel = document.getElementById('bk-sel');
+  sel.value = 'demo';
+  loadBook('demo');
+}
+
+// ═══════════════════════════════════════════════════════
+// 加载书籍
+// ═══════════════════════════════════════════════════════
+async function loadBook(bookId) {
+  if (!bookId) {
+    resetView(); return;
+  }
+  state.bookId = bookId;
+  localStorage.setItem('tl_book', bookId);
+
+  document.getElementById('swimlane-outer').innerHTML = '<div class="loader"><div class="spin"></div>加载中...</div>';
+
+  if (bookId === 'demo') {
+    // 演示模式：直接用内嵌数据
+    applyData(DEMO.threads, DEMO.timeline, DEMO.causal, DEMO.dormant, DEMO.book.current_chapter, DEMO.book.target_chapters);
+    populateChapterSelect(DEMO.book.current_chapter);
+    return;
+  }
+
+  try {
+    const [statusResp, tlResp] = await Promise.all([
+      fetch(`/api/books/${bookId}/threads/status`),
+      fetch(`/api/books/${bookId}/timeline`),
+    ]);
+    const status = await statusResp.json();
+    const timeline = await tlResp.json().catch(()=>[]);
+    applyData(
+      status.threads || [],
+      Array.isArray(timeline) ? timeline : [],
+      status.cross_thread_causal_links || [],
+      status.dormant || [],
+      status.current_chapter || 0,
+      status.target_chapters || 90,
+    );
+    populateChapterSelect(status.current_chapter || 0);
+  } catch(e) {
+    document.getElementById('swimlane-outer').innerHTML =
+      `<div class="empty"><div class="empty-icon">!</div><div class="empty-title">加载失败</div><div class="empty-desc">${e.message}</div></div>`;
+  }
+}
+
+function applyData(threads, timeline, causal, dormant, currentChapter, maxChapters) {
+  state.threads = threads;
+  state.timeline = timeline;
+  state.causal = causal;
+  state.dormant = dormant;
+  state.currentChapter = currentChapter;
+  state.maxChapters = maxChapters;
+  renderThreadList();
+  renderSwimlane();
+  renderBottom();
+}
+
+function resetView() {
+  state.bookId = '';
+  state.threads = []; state.timeline = [];
+  document.getElementById('thread-list').innerHTML = '<div class="detail-empty" style="padding:24px">选择书籍后显示</div>';
+  document.getElementById('thread-count').textContent = '0';
+  document.getElementById('swimlane-outer').innerHTML = '<div class="empty" id="empty-state"><div class="empty-icon">〰</div><div class="empty-title">选择书籍开始</div><div class="empty-desc">从右上角下拉菜单选择书籍。演示模式包含完整示例数据。</div></div>';
+  closeDetail();
+}
+
+// ═══════════════════════════════════════════════════════
+// 渲染线程列表
+// ═══════════════════════════════════════════════════════
+function renderThreadList() {
+  const el = document.getElementById('thread-list');
+  document.getElementById('thread-count').textContent = state.threads.length;
+  if (!state.threads.length) {
+    el.innerHTML = '<div class="detail-empty" style="padding:20px">暂无线程</div>'; return;
+  }
+  const typeLabel = {main:'主线', subplot:'支线', parallel:'并行', flashback:'闪回'};
+  const statusLabel = {active:'活跃', dormant:'休眠', resolved:'完结', merged:'已合并'};
+
+  el.innerHTML = state.threads.map(t => {
+    const tc = 'tb-'+(t.type||'subplot');
+    const sc = 'tb-'+(t.status||'active');
+    const evCount = state.timeline.filter(e=>e.thread_id===t.id).length;
+    return `<div class="thread-item" data-tid="${t.id}" onclick="highlightThread('${t.id}')">
+      <div class="ti-name">
+        <span class="type-badge ${tc}">${typeLabel[t.type]||t.type}</span>
+        ${escHtml(t.name||t.id)}
+      </div>
+      <div class="ti-meta">
+        <span class="type-badge ${sc}">${statusLabel[t.status]||t.status||'活跃'}</span>
+        <span>${evCount} 事件</span>
+        ${t.pov_character_id?`<span>视角 ${t.pov_character_id}</span>`:''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function highlightThread(tid) {
+  if (state.highlightThread === tid) {
+    state.highlightThread = null;
+    document.querySelectorAll('.thread-item').forEach(el=>el.classList.remove('active'));
+    document.querySelectorAll('.lane-track').forEach(el=>el.classList.remove('highlight'));
+    document.querySelectorAll('.lane-row').forEach(el=>el.style.opacity='1');
+  } else {
+    state.highlightThread = tid;
+    document.querySelectorAll('.thread-item').forEach(el=>{
+      el.classList.toggle('active', el.dataset.tid===tid);
+    });
+    document.querySelectorAll('.lane-row').forEach(el=>{
+      el.style.opacity = el.dataset.tid===tid ? '1' : '0.3';
+    });
+    document.querySelectorAll('.lane-track').forEach(el=>{
+      el.classList.toggle('highlight', el.dataset.tid===tid);
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// 渲染泳道图
+// ═══════════════════════════════════════════════════════
+const TYPE_COLORS = {
+  main:'var(--blue)', subplot:'var(--purple)', parallel:'var(--cyan)',
+  flashback:'var(--orange)', default:'var(--text2)'
+};
+const EV_CATS = {
+  position:{cls:'ev-pos', color:'#1a6fd4'},
+  emotion: {cls:'ev-emotion', color:'#b83c3c'},
+  info:    {cls:'ev-info', color:'#1a7a32'},
+  conflict:{cls:'ev-conflict', color:'#c06010'},
+  key:     {cls:'ev-key', color:'#b04020'},
+  other:   {cls:'ev-other', color:'#5a3aa0'},
+};
+
+function catOf(ev) {
+  if (ev.is_key) return 'key';
+  const t=(ev.type||'').toLowerCase(), a=(ev.action||'').toLowerCase();
+  if (t.includes('position')||a.includes('位置')||a.includes('移动')||a.includes('到达')||a.includes('离开')||a.includes('进入')) return 'position';
+  if (t.includes('emotion')||a.includes('情感')||a.includes('情绪')||a.includes('动摇')||a.includes('坚定')||a.includes('愤怒')||a.includes('屈辱')||a.includes('震怒')) return 'emotion';
+  if (t.includes('info')||a.includes('发现')||a.includes('揭示')||a.includes('得知')||a.includes('真相')||a.includes('秘密')) return 'info';
+  if (t.includes('conflict')||a.includes('冲突')||a.includes('对决')||a.includes('暗算')||a.includes('设局')||a.includes('施压')||a.includes('反制')) return 'conflict';
+  return 'other';
+}
+
+function renderSwimlane() {
+  const outer = document.getElementById('swimlane-outer');
+  if (!state.threads.length && !state.timeline.length) {
+    outer.innerHTML = '<div class="empty"><div class="empty-icon">〰</div><div class="empty-title">暂无数据</div><div class="empty-desc">添加叙事线程后，时间轴事件会出现在泳道图中。</div></div>';
+    return;
+  }
+
+  const zoom = state.zoom / 100;
+  const evByThread = {};
+  state.timeline.forEach(ev => {
+    const tid = ev.thread_id || '__other__';
+    (evByThread[tid] = evByThread[tid]||[]).push(ev);
+  });
+
+  // 计算范围
+  const allChs = [
+    state.currentChapter||1,
+    ...state.timeline.map(e=>e.chapter||1),
+    ...state.threads.map(t=>t.last_active_chapter||1),
+  ];
+  const maxCh = Math.max(1, ...allChs);
+  const displayMax = Math.max(maxCh + 5, 12);
+
+  // 计算每章宽度（px）
+  const chW = Math.max(20, Math.round(28 * zoom)); // 每章基础宽 28px
+  const totalW = chW * displayMax;
+
+  // 三幕分界
+  const act1End = Math.round(displayMax * 0.25);
+  const act2End = Math.round(displayMax * 0.75);
+
+  let html = `<div class="swimlane-inner" style="width:${totalW + 170}px">`;
+
+  // ── 章节标尺 ──
+  html += `<div class="ruler-row">`;
+  html += `<div class="ruler-label-cell"></div>`;
+  html += `<div class="ruler-track" style="width:${totalW}px;flex:none;position:relative;height:24px">`;
+
+  // 幕分区背景
+  const act2Left = ((act1End) / displayMax) * totalW;
+  const act3Left = ((act2End) / displayMax) * totalW;
+  html += `<div class="act-bg" style="left:${act2Left}px;background:rgba(88,166,255,.03)"><span class="act-label" style="left:${act2Left/2}px">第一幕</span></div>`;
+  html += `<div class="act-bg" style="left:${act3Left}px;background:rgba(188,140,255,.03)"><span class="act-label" style="left:${(act2Left+act3Left)/2}px">第二幕</span></div>`;
+  html += `<span class="act-label" style="left:${(act3Left+totalW)/2}px">第三幕</span>`;
+
+  // 章节刻度（每5章一标）
+  const step = displayMax <= 20 ? 1 : displayMax <= 60 ? 5 : 10;
+  for (let ch = 1; ch <= displayMax; ch += step) {
+    const left = ((ch - 1) / displayMax) * totalW;
+    html += `<div class="ruler-mark" style="left:${left}px">Ch${ch}</div>`;
+  }
+  html += `</div></div>`;
+
+  // ── 泳道行 ──
+  const threadIds = [...new Set([
+    ...state.threads.map(t=>t.id),
+    ...Object.keys(evByThread).filter(k=>k!=='__other__')
+  ])];
+
+  threadIds.forEach(tid => {
+    const thread = state.threads.find(t=>t.id===tid);
+    const events = (evByThread[tid]||[]).filter(ev => {
+      if (state.filter === 'all') return true;
+      if (state.filter === 'key') return ev.is_key;
+      return catOf(ev) === state.filter;
+    });
+
+    const name = thread ? thread.name : tid;
+    const color = TYPE_COLORS[thread?.type] || TYPE_COLORS.default;
+
+    html += `<div class="lane-row" data-tid="${tid}" style="margin-bottom:6px">`;
+    html += `<div class="lane-label" style="color:${color};width:160px" title="${tid}">${escHtml(name)}</div>`;
+    html += `<div class="lane-track" data-tid="${tid}" style="width:${totalW}px;flex:none;position:relative">`;
+
+    // 当前章节标线
+    if (state.currentChapter > 0) {
+      const nowLeft = ((state.currentChapter - 1) / displayMax) * totalW;
+      html += `<div class="lane-now" style="left:${nowLeft}px" title="当前 Ch${state.currentChapter}"></div>`;
+    }
+
+    // 幕分界淡线
+    [act1End, act2End].forEach(ch => {
+      const x = ((ch) / displayMax) * totalW;
+      html += `<div style="position:absolute;left:${x}px;top:0;bottom:0;width:1px;background:var(--border);opacity:.4;pointer-events:none"></div>`;
+    });
+
+    // 事件方块
+    events.forEach((ev, i) => {
+      const ch = ev.chapter || 1;
+      const left = ((ch - 1) / displayMax) * totalW;
+      const w = Math.max(chW - 2, 8);
+      const cat = catOf(ev);
+      const cls = EV_CATS[cat]?.cls || 'ev-other';
+      const globalIdx = state.timeline.indexOf(ev);
+      const label = ch <= 20 ? (ev.action||'').slice(0,8) : '';
+      html += `<div class="ev ${cls}"
+        style="left:${left}px;width:${w}px"
+        onclick="showDetail(${globalIdx})"
+        title="Ch${ch}: ${escHtml(ev.action||'')} [${cat}]">${escHtml(label)}</div>`;
+    });
+
+    // 线程活跃范围底色（可选可见度低）
+    if (thread) {
+      const startX = Math.max(0, ((thread.start_chapter||1) - 1) / displayMax * totalW);
+      const endX = thread.last_active_chapter ? (thread.last_active_chapter / displayMax * totalW) : totalW;
+      html += `<div style="position:absolute;left:${startX}px;width:${endX-startX}px;top:1px;bottom:1px;background:${color};opacity:.04;pointer-events:none;border-radius:3px"></div>`;
+    }
+
+    html += `</div></div>`;
+  });
+
+  // ── 没有事件的线程（空道） ──
+  state.threads.filter(t=>!threadIds.includes(t.id)).forEach(t=>{
+    const color = TYPE_COLORS[t.type]||TYPE_COLORS.default;
+    html += `<div class="lane-row" data-tid="${t.id}">`;
+    html += `<div class="lane-label" style="color:${color};opacity:.4;width:160px">${escHtml(t.name)}</div>`;
+    html += `<div class="lane-track" data-tid="${t.id}" style="width:${totalW}px;flex:none;opacity:.2"></div>`;
+    html += `</div>`;
+  });
+
+  html += `</div>`;
+  outer.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════
+// 事件详情
+// ═══════════════════════════════════════════════════════
+function showDetail(idx) {
+  if (idx < 0 || idx >= state.timeline.length) return;
+  state.selectedIdx = idx;
+  const ev = state.timeline[idx];
+  const cat = catOf(ev);
+  const catNames = {position:'位置变化', emotion:'情感转变', info:'信息揭示', conflict:'核心冲突', key:'关键节点', other:'其他事件'};
+  const catColors = {position:'var(--blue)', emotion:'var(--red)', info:'var(--green)', conflict:'var(--orange)', key:'var(--pink)', other:'var(--purple)'};
+  const thread = state.threads.find(t=>t.id===ev.thread_id);
+
+  // 高亮
+  document.querySelectorAll('.ev').forEach(el=>el.classList.remove('sel'));
+  document.querySelectorAll('.ev').forEach(el=>{
+    if (el.getAttribute('onclick')===`showDetail(${idx})`) el.classList.add('sel');
+  });
+
+  let html = '';
+  if (ev.is_key) html += `<div style="background:var(--orange-bg);border:1px solid rgba(240,136,62,.3);border-radius:var(--radius);padding:6px 10px;margin-bottom:12px;font-size:11px;color:var(--orange);font-weight:600">★ 关键叙事节点</div>`;
+  html += field('事件类型', `<span class="df-val colored" style="color:${catColors[cat]}">${catNames[cat]||cat}</span>`);
+  html += field('所属线程', thread ? thread.name : (ev.thread_id||'—'));
+  html += field('章节', `第 ${ev.chapter||'?'} 章`);
+  if (ev.character_id) html += field('相关角色', ev.character_id);
+  if (ev.action) html += field('事件描述', `<div class="df-val" style="line-height:1.6">${escHtml(ev.action)}</div>`);
+
+  // 查找相关因果链
+  const linked = state.causal.filter(c=>c.source_chapter===ev.chapter&&c.source_thread_id===ev.thread_id
+    || c.target_chapter===ev.chapter&&c.target_thread_id===ev.thread_id);
+  if (linked.length) {
+    html += `<div class="df-label" style="margin-top:12px">关联因果链</div>`;
+    linked.forEach(c=>{
+      html += `<div style="font-size:11px;padding:5px 8px;background:var(--surface);border-radius:var(--radius);margin-top:4px;color:var(--text2)">
+        <span style="color:var(--blue)">${c.source_thread_id}</span>
+        <span style="color:var(--text3)"> → </span>
+        <span style="color:var(--purple)">${c.target_thread_id}</span>
+        <div style="color:var(--text3);margin-top:2px">${escHtml(c.description||'')}</div>
+      </div>`;
+    });
+  }
+
+  document.getElementById('detail-body').innerHTML = html;
+  document.getElementById('detail-close-btn').style.display='';
+  document.getElementById('detail-ft').style.display='';
+}
+
+function field(label, val) {
+  return `<div class="df"><div class="df-label">${label}</div><div class="df-val">${val}</div></div>`;
+}
+
+function closeDetail() {
+  state.selectedIdx = null;
+  document.querySelectorAll('.ev').forEach(el=>el.classList.remove('sel'));
+  document.getElementById('detail-body').innerHTML = '<div class="detail-empty">点击泳道中的<br>事件方块查看详情</div>';
+  document.getElementById('detail-close-btn').style.display='none';
+  document.getElementById('detail-ft').style.display='none';
+}
+
+// ═══════════════════════════════════════════════════════
+// 底部面板
+// ═══════════════════════════════════════════════════════
+function renderBottom() {
+  const causalBadge = document.getElementById('causal-badge');
+  const warnBadge   = document.getElementById('warning-badge');
+  if (state.causal.length) { causalBadge.style.display=''; causalBadge.textContent=state.causal.length; }
+  else causalBadge.style.display='none';
+  if (state.dormant.length) { warnBadge.style.display=''; warnBadge.textContent=state.dormant.length; }
+  else warnBadge.style.display='none';
+  if (state.activeTab === 'causal') renderCausal();
+  else renderWarnings();
+}
+
+function renderCausal() {
+  const el = document.getElementById('bottom-body');
+  if (!state.causal.length) {
+    el.innerHTML='<div class="detail-empty" style="padding:20px">暂无跨线程因果链数据</div>'; return;
+  }
+  el.innerHTML = state.causal.map(c => {
+    const srcT = state.threads.find(t=>t.id===c.source_thread_id);
+    const tgtT = state.threads.find(t=>t.id===c.target_thread_id);
+    return `<div class="causal-row">
+      <div class="causal-dot" style="background:var(--blue)"></div>
+      <span style="color:var(--blue);font-weight:600;min-width:64px">${escHtml(srcT?.name||c.source_thread_id)}</span>
+      <span style="color:var(--text3);font-size:12px"> → </span>
+      <span style="color:var(--purple);font-weight:600;min-width:64px">${escHtml(tgtT?.name||c.target_thread_id)}</span>
+      <span style="flex:1;color:var(--text2)">${escHtml(c.description||c.type||'')}</span>
+      ${c.source_chapter?`<span style="color:var(--text3);font-size:10px;white-space:nowrap">Ch${c.source_chapter}${c.target_chapter?'→Ch'+c.target_chapter:''}</span>`:''}
+    </div>`;
+  }).join('');
+}
+
+function renderWarnings() {
+  const el = document.getElementById('bottom-body');
+  const dormant = state.dormant.length ? state.dormant :
+    state.threads.filter(t=>t.status==='dormant').map(t=>({...t, gap: state.currentChapter - (t.last_active_chapter||0)}));
+  if (!dormant.length) {
+    el.innerHTML='<div class="detail-empty" style="padding:20px">✓ 所有线程均活跃，无掉线预警</div>'; return;
+  }
+  el.innerHTML = dormant.map(t => `
+    <div class="warn-row">
+      <div class="warn-badge">休眠</div>
+      <div style="flex:1">
+        <strong>${escHtml(t.name||t.id)}</strong>
+        <span style="color:var(--text3)"> — 已 </span>
+        <span style="color:var(--yellow);font-weight:700">${t.gap||'?'} 章</span>
+        <span style="color:var(--text3)"> 未出现（最后 Ch${t.last_active_chapter||'?'}）</span>
+      </div>
+      <button class="btn btn-sm" onclick="wakeThread('${t.id}')">唤醒</button>
+    </div>`).join('');
+}
+
+function switchTab(tab) {
+  state.activeTab = tab;
+  document.getElementById('btab-causal').classList.toggle('on', tab==='causal');
+  document.getElementById('btab-warning').classList.toggle('on', tab==='warning');
+  if (tab==='causal') renderCausal(); else renderWarnings();
+}
+
+// ═══════════════════════════════════════════════════════
+// 筛选 + 缩放
+// ═══════════════════════════════════════════════════════
+function setFilter(f, el) {
+  state.filter = f;
+  document.querySelectorAll('.chip').forEach(c=>c.classList.remove('on'));
+  el.classList.add('on');
+  renderSwimlane();
+}
+
+function setZoom(val) {
+  state.zoom = Math.max(40, Math.min(300, parseInt(val)||100));
+  document.getElementById('zoom-input').value = state.zoom;
+  renderSwimlane();
+}
+
+// ═══════════════════════════════════════════════════════
+// 线程 CRUD
+// ═══════════════════════════════════════════════════════
+function showAddThread() {
+  if (!state.bookId) { alert('请先选择一本书'); return; }
+  ['tf-id','tf-name','tf-pov','tf-chars','tf-goal','tf-arc','tf-hook'].forEach(id=>{
+    const el=document.getElementById(id); if(el) el.value='';
+  });
+  document.getElementById('tf-type').value='subplot';
+  document.getElementById('tf-weight').value='0.7';
+  document.getElementById('tf-start').value='1';
+  document.getElementById('tf-merge').value='';
+  document.getElementById('thread-modal').style.display='';
+}
+
+function closeModal() { document.getElementById('thread-modal').style.display='none'; }
+
+async function saveThread() {
+  const id=document.getElementById('tf-id').value.trim();
+  const name=document.getElementById('tf-name').value.trim();
+  if(!id||!name){alert('ID 和名称为必填项');return;}
+  const body={id,name,type:document.getElementById('tf-type').value,weight:parseFloat(document.getElementById('tf-weight').value)||0.7,
+    pov_character_id:document.getElementById('tf-pov').value.trim(),
+    character_ids:document.getElementById('tf-chars').value.split(',').map(s=>s.trim()).filter(Boolean),
+    goal:document.getElementById('tf-goal').value.trim(),growth_arc:document.getElementById('tf-arc').value.trim(),
+    start_chapter:parseInt(document.getElementById('tf-start').value)||1,
+    merge_chapter:parseInt(document.getElementById('tf-merge').value)||null,
+    end_hook:document.getElementById('tf-hook').value.trim()};
+
+  if (state.bookId === 'demo') {
+    // 演示模式：直接添加到本地
+    state.threads.push({...body, status:'active', last_active_chapter:0});
+    closeModal();
+    renderThreadList(); renderSwimlane(); return;
+  }
+
+  try {
+    const resp=await fetch(`/api/books/${state.bookId}/threads`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const data=await resp.json();
+    if(!data.ok){alert(data.detail||'创建失败');return;}
+    closeModal(); loadBook(state.bookId);
+  } catch(e){alert('保存失败：'+e.message);}
+}
+
+async function wakeThread(tid) {
+  if (state.bookId==='demo') {
+    const t=state.threads.find(t=>t.id===tid); if(t) t.status='active';
+    state.dormant=state.dormant.filter(d=>d.id!==tid);
+    renderBottom(); renderThreadList(); return;
+  }
+  await fetch(`/api/books/${state.bookId}/threads/${tid}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'active'})});
+  loadBook(state.bookId);
+}
+
+// ═══════════════════════════════════════════════════════
+// 章节选择 + 提取数据
+// ═══════════════════════════════════════════════════════
+function populateChapterSelect(maxCh) {
+  const sel=document.getElementById('ch-sel');
+  sel.innerHTML='<option value="">提取章节</option>';
+  for(let i=1;i<=maxCh;i++){
+    const opt=document.createElement('option');
+    opt.value=i; opt.textContent=`第${i}章`;
+    sel.appendChild(opt);
+  }
+  if(maxCh>0) sel.value=maxCh;
+}
+
+async function extractData() {
+  const ch=parseInt(document.getElementById('ch-sel').value);
+  if(!ch){alert('请先选择章节');return;}
+  if(state.bookId==='demo'){alert('演示模式无需提取，数据已内嵌。');return;}
+  if(!confirm(`将从第 ${ch} 章正文提取时间线数据，约需30秒，继续？`)) return;
+  try {
+    const resp=await fetch(`/api/books/${state.bookId}/extract-story-state`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chapter:ch})});
+    const data=await resp.json();
+    if(data.ok){alert(`提取成功！\n${data.summary}\n（已自动识别章节主要角色并分配到对应线程）`);loadBook(state.bookId);}
+    else alert('提取失败：'+(data.error||'未知错误'));
+  } catch(e){alert('请求失败：'+e.message);}
+}
+
+// ═══════════════════════════════════════════════════════
+// 工具函数
+// ═══════════════════════════════════════════════════════
+function escHtml(s='') {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ═══════════════════════════════════════════════════════
+// 启动
+// ═══════════════════════════════════════════════════════
+init();
+</script>
+</body>
+</html>

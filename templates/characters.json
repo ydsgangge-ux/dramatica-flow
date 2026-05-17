@@ -1,0 +1,63 @@
+{
+  "_comment": "角色定义文件 — 填写后运行 df setup characters <book_id> 加载",
+  "characters": [
+    {
+      "id": "lin_chen",
+      "name": "林尘",
+      "need": {
+        "external": "逆天改命，登顶巅峰，让所有瞧不起他的人跪地认错",
+        "internal": "证明自己的存在有价值，不是废物"
+      },
+      "worldview": {
+        "power": "seeks",
+        "trust": "suspicious",
+        "coping": "fight"
+      },
+      "obstacles": [
+        {
+          "type": "antagonist",
+          "description": "未婚妻家族（慕家）——权贵阶层对底层的压迫",
+          "mechanism": "慕家控制了林尘获得资源和机遇的渠道"
+        },
+        {
+          "type": "self",
+          "description": "被封印的灵根，修炼速度极慢",
+          "mechanism": "客观实力差距让外部目标看似不可能"
+        }
+      ],
+      "arc": "positive",
+      "profile": "十七岁少年，外表平凡，眼神有一股不服输的倔劲。说话简短有力，不废话。",
+      "behavior_lock": [
+        "关键时刻不圣母心软",
+        "对挑衅者不忍气吞声",
+        "不做无意义的自我怀疑独白"
+      ]
+    },
+    {
+      "id": "mu_xue",
+      "name": "慕雪",
+      "need": {
+        "external": "维持慕家的门面与利益",
+        "internal": "渴望真正被人爱，而非作为政治筹码"
+      },
+      "worldview": {
+        "power": "accepts",
+        "trust": "selective",
+        "coping": "flee"
+      },
+      "obstacles": [
+        {
+          "type": "society",
+          "description": "家族利益的枷锁",
+          "mechanism": "她的每一个选择都必须服从家族意志"
+        }
+      ],
+      "arc": "negative",
+      "profile": "容颜绝美，气度高华，言辞锋利，内心实则脆弱。",
+      "behavior_lock": [
+        "不会主动道歉",
+        "在家族长辈面前必须维持强硬姿态"
+      ]
+    }
+  ]
+}

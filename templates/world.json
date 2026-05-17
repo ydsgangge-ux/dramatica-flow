@@ -1,0 +1,79 @@
+{
+  "_comment": "世界定义文件 — 填写后运行 df setup world <book_id> 加载",
+  "locations": [
+    {
+      "id": "loc_arena",
+      "name": "林家演武场",
+      "description": "家族比试之地，四面石台，观众台层层叠叠，每逢家族大比热闹非凡",
+      "connections": ["loc_main_hall", "loc_gate"],
+      "faction": "lin_family",
+      "dramatic_potential": "公开羞辱与逆袭的天然舞台，一切恩怨在此了结"
+    },
+    {
+      "id": "loc_main_hall",
+      "name": "林家正厅",
+      "description": "林家族长议事之所，挂满历代先祖画像",
+      "connections": ["loc_arena", "loc_gate"],
+      "faction": "lin_family",
+      "dramatic_potential": "权力与决策之地，家族命运在此宣判"
+    },
+    {
+      "id": "loc_mountain",
+      "name": "青峰山",
+      "description": "城郊荒山，妖兽出没，灵气浓郁，险象环生，弱者禁地",
+      "connections": ["loc_gate"],
+      "faction": null,
+      "dramatic_potential": "孤立修炼、生死考验、意外际遇的理想场所"
+    },
+    {
+      "id": "loc_gate",
+      "name": "城门",
+      "description": "青云城东门，林家与外界的分界线",
+      "connections": ["loc_main_hall", "loc_mountain"],
+      "faction": null,
+      "dramatic_potential": "离开与归来的象征节点"
+    }
+  ],
+  "factions": [
+    {
+      "id": "lin_family",
+      "name": "林家",
+      "description": "青云城中等世家，实力平平，近年日渐式微",
+      "core_interest": "维持家族地位，不被上等世家吞并",
+      "relations": {
+        "mu_family": -30,
+        "city_lord": 10
+      }
+    },
+    {
+      "id": "mu_family",
+      "name": "慕家",
+      "description": "青云城上等世家，财雄势大，把持城内半数资源",
+      "core_interest": "扩张势力，垄断灵石矿脉",
+      "relations": {
+        "lin_family": -30,
+        "city_lord": 60
+      }
+    }
+  ],
+  "world_rules": [
+    {
+      "name": "修炼境界",
+      "description": "炼体→聚气→元婴→化神，四大境界，每境分三层",
+      "consequence": "越级挑战者必败，除非有逆天机缘",
+      "is_hard": true
+    },
+    {
+      "name": "灵根品质",
+      "description": "灵根决定修炼速度，分废、劣、中、优、极品五等",
+      "consequence": "废灵根者通常无法突破聚气境三层",
+      "is_hard": false
+    },
+    {
+      "name": "三年之约",
+      "description": "当众立下的誓约具有法律效力，违约者将被逐出城",
+      "consequence": "违约即失去社会地位",
+      "is_hard": true
+    }
+  ]
+}

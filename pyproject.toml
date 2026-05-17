@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cli", "core"]
+
+[project]
+name = "dramatica-flow"
+version = "0.1.0"
+description = "A narrative-first AI writing system grounded in dramatic theory"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.30.0",       # DeepSeek 走 OpenAI 兼容接口
+    "pydantic>=2.0.0",      # LLM 输出 schema 校验
+    "typer>=0.12.0",        # CLI 框架
+    "rich>=13.0.0",         # 终端美化
+    "python-dotenv>=1.0.0", # .env 配置
+    "fastapi>=0.110.0",     # Web UI 后端
+    "uvicorn>=0.29.0",      # ASGI 服务器
+    "python-multipart>=0.0.22", # 表单数据支持
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "mypy>=1.10.0",
+    "ruff>=0.4.0",
+]
+
+[project.scripts]
+df = "cli.main:app"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
