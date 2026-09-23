@@ -196,7 +196,7 @@ LLM_PROVIDERS: dict[str, dict] = {
     "qwen":        {"label": "通义千问",           "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",  "model": "qwen-plus",               "key_hint": "bailian.console.aliyun.com 获取"},
     "doubao":      {"label": "豆包·火山方舟",     "base_url": "https://ark.cn-beijing.volces.com/api/v3",            "model": "doubao-pro-32k",          "key_hint": "console.volcengine.com/ark 获取"},
     "siliconflow": {"label": "硅基流动",           "base_url": "https://api.siliconflow.cn/v1",                      "model": "deepseek-ai/DeepSeek-V3", "key_hint": "siliconflow.cn 获取"},
-    "mimo":        {"label": "小米MiMo",            "base_url": "https://api.xiaomimimo.com/v1",                       "model": "mimo-v2.5",               "key_hint": "platform.xiaomimimo.com 获取"},
+    "mimo":        {"label": "小米MiMo",            "base_url": "https://api.xiaomimimo.com/v1",                       "model": "mimo-v2.6-pro",           "key_hint": "platform.xiaomimimo.com 获取"},
     "openrouter":  {"label": "OpenRouter",          "base_url": "https://openrouter.ai/api/v1",                      "model": "openrouter/auto",         "key_hint": "openrouter.ai 获取"},
     "custom":      {"label": "自定义/中转站",      "base_url": "",                                                    "model": "",                        "key_hint": "任意 OpenAI 兼容接口"},
 }
