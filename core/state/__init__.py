@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
+import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +20,10 @@ from ..types.state import (
     EmotionalSnapshot, Hook, HookStatus, CausalLink, AffectedDecision,
 )
 from ..types.narrative import NarrativeThread, TimelineEvent
+
+
+# 进程内全局锁：所有 StateManager 实例共享，保证「读-改-写」不被并发请求打断
+_STATE_LOCK = threading.RLock()
 
 
 # ── 真相文件初始模板 ──────────────────────────────────────────────────────────
@@ -162,11 +169,13 @@ class StateManager:
 
     def write_truth(self, key: TruthFileKey | str, content: str) -> None:
         path = self.state_dir / TRUTH_FILE_NAMES[_key(key)]
-        path.write_text(content, encoding="utf-8")
+        with _STATE_LOCK:
+            _atomic_write_text(path, content)
 
     def append_truth(self, key: TruthFileKey | str, content: str) -> None:
-        existing = self.read_truth(key)
-        self.write_truth(key, existing + content)
+        with _STATE_LOCK:
+            existing = self.read_truth(key)
+            self.write_truth(key, existing + content)
 
     def read_truth_bundle(self, keys: list[TruthFileKey | str]) -> str:
         """读取多个真相文件拼接，供 Agent 上下文使用"""
@@ -284,9 +293,10 @@ class StateManager:
     # ── 原子状态更新 ─────────────────────────────────────────────────────────────
 
     def move_character(self, character_id: str, location_id: str) -> None:
-        state = self.read_world_state()
-        state.character_positions[character_id] = location_id
-        self.write_world_state(state)
+        with _STATE_LOCK:
+            state = self.read_world_state()
+            state.character_positions[character_id] = location_id
+            self.write_world_state(state)
 
     def update_relationship(
         self,
@@ -297,33 +307,34 @@ class StateManager:
         reason: str,
     ) -> None:
         from ..types.state import RelationshipType, RelationshipDelta
-        state = self.read_world_state()
-        key = ":".join(sorted([char_a, char_b]))
-        rel = next(
-            (r for r in state.relationships if r.key == key),
-            None,
-        )
-        if rel is None:
-            rel = RelationshipRecord(
-                character_a=char_a,
-                character_b=char_b,
-                type=RelationshipType.NEUTRAL,
-                strength=0,
+        with _STATE_LOCK:
+            state = self.read_world_state()
+            key = ":".join(sorted([char_a, char_b]))
+            rel = next(
+                (r for r in state.relationships if r.key == key),
+                None,
             )
-            state.relationships.append(rel)
-        rel.strength = max(-100, min(100, rel.strength + delta))
-        rel.history.append(RelationshipDelta(chapter=chapter, delta=delta, reason=reason))
-        # 自动更新关系类型：仅对"强度型"关系演替，不覆盖语义型
-        # （romantic / family / mentor / rival 等由人设定，不受强度支配）
-        _plot_types = {RelationshipType.NEUTRAL, RelationshipType.ALLY, RelationshipType.ENEMY}
-        if rel.type in _plot_types:
-            if rel.strength >= 50:
-                rel.type = RelationshipType.ALLY
-            elif rel.strength <= -50:
-                rel.type = RelationshipType.ENEMY
-            else:
-                rel.type = RelationshipType.NEUTRAL
-        self.write_world_state(state)
+            if rel is None:
+                rel = RelationshipRecord(
+                    character_a=char_a,
+                    character_b=char_b,
+                    type=RelationshipType.NEUTRAL,
+                    strength=0,
+                )
+                state.relationships.append(rel)
+            rel.strength = max(-100, min(100, rel.strength + delta))
+            rel.history.append(RelationshipDelta(chapter=chapter, delta=delta, reason=reason))
+            # 自动更新关系类型：仅对"强度型"关系演替，不覆盖语义型
+            # （romantic / family / mentor / rival 等由人设定，不受强度支配）
+            _plot_types = {RelationshipType.NEUTRAL, RelationshipType.ALLY, RelationshipType.ENEMY}
+            if rel.type in _plot_types:
+                if rel.strength >= 50:
+                    rel.type = RelationshipType.ALLY
+                elif rel.strength <= -50:
+                    rel.type = RelationshipType.ENEMY
+                else:
+                    rel.type = RelationshipType.NEUTRAL
+            self.write_world_state(state)
 
     def learn_info(
         self,
@@ -333,94 +344,140 @@ class StateManager:
         chapter: int,
         source: str = "witnessed",
     ) -> None:
-        state = self.read_world_state()
-        if not state.character_knows(character_id, info_key):
-            state.known_info.append(KnownInfoRecord(
-                character_id=character_id,
-                info_key=info_key,
-                content=content,
-                learned_in_chapter=chapter,
-                source=source,  # type: ignore
-            ))
-            self.write_world_state(state)
+        with _STATE_LOCK:
+            state = self.read_world_state()
+            if not state.character_knows(character_id, info_key):
+                state.known_info.append(KnownInfoRecord(
+                    character_id=character_id,
+                    info_key=info_key,
+                    content=content,
+                    learned_in_chapter=chapter,
+                    source=source,  # type: ignore
+                ))
+                self.write_world_state(state)
 
     def record_emotion(self, snapshot: EmotionalSnapshot) -> None:
-        state = self.read_world_state()
-        state.emotional_snapshots.append(snapshot)
-        self.write_world_state(state)
+        with _STATE_LOCK:
+            state = self.read_world_state()
+            state.emotional_snapshots.append(snapshot)
+            self.write_world_state(state)
 
     def open_hook(self, hook: Hook) -> None:
-        state = self.read_world_state()
-        # 避免重复
-        if not any(h.id == hook.id for h in state.pending_hooks):
-            state.pending_hooks.append(hook)
-            self.write_world_state(state)
-            row = (
-                f"| {hook.id} | {hook.type.value} | {hook.description} "
-                f"| {hook.planted_in_chapter} "
-                f"| {hook.expected_resolution_range[0]}-{hook.expected_resolution_range[1]} "
-                f"| {hook.status.value} |\n"
-            )
-            self.append_truth(TruthFileKey.PENDING_HOOKS, row)
+        with _STATE_LOCK:
+            state = self.read_world_state()
+            # 避免重复
+            if not any(h.id == hook.id for h in state.pending_hooks):
+                state.pending_hooks.append(hook)
+                self.write_world_state(state)
+                # 统一由 world_state 重建 md 表格，避免两处数据不一致
+                self._rebuild_pending_hooks_md(state)
 
     def resolve_hook(self, hook_id: str, chapter: int) -> None:
-        state = self.read_world_state()
-        hook = next((h for h in state.pending_hooks if h.id == hook_id), None)
-        if hook:
-            hook.status = HookStatus.RESOLVED
-            hook.resolved_in_chapter = chapter
-            self.write_world_state(state)
+        with _STATE_LOCK:
+            state = self.read_world_state()
+            hook = next((h for h in state.pending_hooks if h.id == hook_id), None)
+            if hook:
+                hook.status = HookStatus.RESOLVED
+                hook.resolved_in_chapter = chapter
+                self.write_world_state(state)
+                # 同步 pending_hooks.md，否则正文提示词里的状态列仍是 open
+                self._rebuild_pending_hooks_md(state)
+
+    def _rebuild_pending_hooks_md(self, state: WorldState) -> None:
+        """以 world_state.json 为唯一真相源，重建 pending_hooks.md 表格"""
+        lines = [
+            "# 未闭合伏笔\n\n",
+            "| ID | 类型 | 描述 | 植入章 | 预计回收 | 状态 |\n",
+            "|---|---|---|---|---|---|\n",
+        ]
+        for h in state.pending_hooks:
+            desc = str(h.description).replace("\n", " ").replace("|", "｜")
+            lines.append(
+                f"| {h.id} | {h.type.value} | {desc} "
+                f"| {h.planted_in_chapter} "
+                f"| {h.expected_resolution_range[0]}-{h.expected_resolution_range[1]} "
+                f"| {h.status.value} |\n"
+            )
+        self.write_truth(TruthFileKey.PENDING_HOOKS, "".join(lines))
+
+    def rebuild_pending_hooks_md(self) -> None:
+        """按 world_state.json 重建 pending_hooks.md（幂等，供状态提取去重后调用）"""
+        with _STATE_LOCK:
+            self._rebuild_pending_hooks_md(self.read_world_state())
+
+    def rebuild_causal_chain_md(self) -> None:
+        """按 world_state.json 重建 causal_chain.md（幂等）"""
+        with _STATE_LOCK:
+            state = self.read_world_state()
+            parts = [_TRUTH_TEMPLATES[TruthFileKey.CAUSAL_CHAIN]]
+            for link in state.causal_chain:
+                decisions = "\n".join(
+                    f"  - **{d.character_id}** 决定：{d.decision}"
+                    for d in link.affected_decisions
+                )
+                parts.append(
+                    f"\n### Ch.{link.chapter} — {link.event}\n"
+                    f"- **因**：{link.cause}\n"
+                    f"- **果**：{link.consequence}\n"
+                    + (decisions + "\n" if decisions else "")
+                )
+            self.write_truth(TruthFileKey.CAUSAL_CHAIN, "".join(parts))
 
     def add_causal_link(self, link: CausalLink) -> None:
-        state = self.read_world_state()
-        state.causal_chain.append(link)
-        self.write_world_state(state)
-        decisions = "\n".join(
-            f"  - **{d.character_id}** 决定：{d.decision}"
-            for d in link.affected_decisions
-        )
-        entry = (
-            f"\n### Ch.{link.chapter} — {link.event}\n"
-            f"- **因**：{link.cause}\n"
-            f"- **果**：{link.consequence}\n"
-            + (decisions + "\n" if decisions else "")
-        )
-        self.append_truth(TruthFileKey.CAUSAL_CHAIN, entry)
+        with _STATE_LOCK:
+            state = self.read_world_state()
+            state.causal_chain.append(link)
+            self.write_world_state(state)
+            decisions = "\n".join(
+                f"  - **{d.character_id}** 决定：{d.decision}"
+                for d in link.affected_decisions
+            )
+            entry = (
+                f"\n### Ch.{link.chapter} — {link.event}\n"
+                f"- **因**：{link.cause}\n"
+                f"- **果**：{link.consequence}\n"
+                + (decisions + "\n" if decisions else "")
+            )
+            self.append_truth(TruthFileKey.CAUSAL_CHAIN, entry)
 
     # ── 叙事线程管理 ─────────────────────────────────────────────────────────────
 
     def create_thread(self, thread: NarrativeThread) -> None:
-        state = self.read_world_state()
-        if not any(t.id == thread.id for t in state.threads):
-            state.threads.append(thread)
-            self.write_world_state(state)
+        with _STATE_LOCK:
+            state = self.read_world_state()
+            if not any(t.id == thread.id for t in state.threads):
+                state.threads.append(thread)
+                self.write_world_state(state)
 
     def update_thread(self, thread_id: str, **kwargs) -> None:
-        state = self.read_world_state()
-        for t in state.threads:
-            if t.id == thread_id:
-                for k, v in kwargs.items():
-                    if hasattr(t, k):
-                        setattr(t, k, v)
-                break
-        self.write_world_state(state)
+        with _STATE_LOCK:
+            state = self.read_world_state()
+            for t in state.threads:
+                if t.id == thread_id:
+                    for k, v in kwargs.items():
+                        if hasattr(t, k):
+                            setattr(t, k, v)
+                    break
+            self.write_world_state(state)
 
     def delete_thread(self, thread_id: str) -> None:
         """删除线程及其关联的时间轴事件"""
-        state = self.read_world_state()
-        state.threads = [t for t in state.threads if t.id != thread_id]
-        state.timeline = [e for e in state.timeline if e.thread_id != thread_id]
-        self.write_world_state(state)
+        with _STATE_LOCK:
+            state = self.read_world_state()
+            state.threads = [t for t in state.threads if t.id != thread_id]
+            state.timeline = [e for e in state.timeline if e.thread_id != thread_id]
+            self.write_world_state(state)
 
     def add_timeline_event(self, event: TimelineEvent) -> None:
-        state = self.read_world_state()
-        state.timeline.append(event)
-        # 更新线程的 last_active_chapter
-        if event.thread_id:
-            for t in state.threads:
-                if t.id == event.thread_id and event.chapter > t.last_active_chapter:
-                    t.last_active_chapter = event.chapter
-        self.write_world_state(state)
+        with _STATE_LOCK:
+            state = self.read_world_state()
+            state.timeline.append(event)
+            # 更新线程的 last_active_chapter
+            if event.thread_id:
+                for t in state.threads:
+                    if t.id == event.thread_id and event.chapter > t.last_active_chapter:
+                        t.last_active_chapter = event.chapter
+            self.write_world_state(state)
 
     def get_thread_timeline(self, thread_id: str) -> list[TimelineEvent]:
         state = self.read_world_state()
@@ -547,11 +604,13 @@ class StateManager:
 
     def save_draft(self, chapter: int, content: str) -> Path:
         path = self.chapter_dir / f"ch{chapter:04d}_draft.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return path
 
     def save_final(self, chapter: int, content: str) -> Path:
         path = self.chapter_dir / f"ch{chapter:04d}_final.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return path
 
@@ -601,6 +660,38 @@ class StateManager:
     def write_config(self, config: BookConfig) -> None:
         self._write_json("config.json", dataclasses.asdict(config))
 
+    def read_characters(self) -> dict[str, dict]:
+        """
+        读取角色配置（供状态提取 / 提示词使用）。
+        优先 setup_state.json，其次 setup/characters.json。
+        返回 {char_id: 角色原始字典}，找不到时返回空字典而不是抛异常。
+        """
+        setup_state = self.state_dir / "setup_state.json"
+        if setup_state.exists():
+            try:
+                data = json.loads(setup_state.read_text(encoding="utf-8"))
+                chars = data.get("characters", {})
+                if isinstance(chars, dict) and chars:
+                    return chars
+                # 兼容列表形式
+                if isinstance(chars, list):
+                    return {c.get("id", ""): c for c in chars if c.get("id")}
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        raw = self.book_dir / "setup" / "characters.json"
+        if raw.exists():
+            try:
+                data = json.loads(raw.read_text(encoding="utf-8"))
+                return {
+                    c.get("id", ""): c
+                    for c in data.get("characters", [])
+                    if c.get("id")
+                }
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
     # ── 内部工具 ─────────────────────────────────────────────────────────────────
 
     def _read_json(self, filename: str) -> dict:
@@ -609,7 +700,27 @@ class StateManager:
 
     def _write_json(self, filename: str, data: dict) -> None:
         path = self.state_dir / filename
-        path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        with _STATE_LOCK:
+            _atomic_write_text(
+                path, json.dumps(data, ensure_ascii=False, indent=2)
+            )
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """原子写：先写同目录临时文件，再 os.replace，避免中断导致半截文件"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise

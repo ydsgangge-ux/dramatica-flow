@@ -128,17 +128,32 @@ def _normalize_outline(raw: dict, sm) -> dict:
             raw["genre"] = cfg.get("genre", "玄幻")
         except Exception:
             raw["genre"] = "玄幻"
+    raw.setdefault("title", "")
+    raw.setdefault("logline", "")
+    # emotional_roadmap 在 schema 中是数组，历史数据可能是空字符串
+    if not isinstance(raw.get("emotional_roadmap"), list):
+        raw["emotional_roadmap"] = []
 
     # 已知应该是整数的字段（AI 可能返回浮点数）
     INT_FIELDS = {"number", "act", "estimated_scenes", "chapter_number", "target_words"}
 
     # 规范化每个序列
     for i, seq in enumerate(raw.get("sequences", [])):
+        if not isinstance(seq, dict):
+            continue
         if "id" not in seq:
             seq["id"] = f"seq_{str(i+1).zfill(3)}"
-        # 修正 dramatic_function
-        df = seq.get("dramatic_function", "setup")
-        seq["dramatic_function"] = _DF_MAP.get(df, df)
+        seq.setdefault("number", i + 1)
+        seq.setdefault("act", 1)
+        seq.setdefault("summary", "")
+        # 修正 dramatic_function：未知值统一落到合法枚举，避免 Schema 校验失败
+        df = str(seq.get("dramatic_function", "setup"))
+        mapped_df = _DF_MAP.get(df.lower().strip())
+        if mapped_df:
+            seq["dramatic_function"] = mapped_df
+        else:
+            from core.llm import _fix_df
+            seq["dramatic_function"] = _fix_df(df)
         # 保留 narrative_goal（必须字段）
         if "narrative_goal" not in seq:
             seq["narrative_goal"] = seq.get("summary", "")
@@ -149,10 +164,6 @@ def _normalize_outline(raw: dict, sm) -> dict:
         # estimated_scenes 至少为 1，不能是 0 或负数
         if seq.get("estimated_scenes", 0) < 1:
             seq["estimated_scenes"] = 1
-
-    # 回写到文件
-    outline_path = sm.state_dir / "outline.json"
-    outline_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return raw
 
@@ -180,6 +191,21 @@ def _dc_to_dict(obj):
 def _sm(book_id: str):
     from core.state import StateManager
     return StateManager(PROJECT_ROOT, book_id)
+
+
+def _latest_chapter_text(sm, chapter: int) -> str:
+    """取最新章节正文：草稿比旧 final 更新时优先用草稿，避免重写后仍按旧定稿提取"""
+    draft_path = sm.chapter_dir / f"ch{chapter:04d}_draft.md"
+    final_path = sm.chapter_dir / f"ch{chapter:04d}_final.md"
+    if draft_path.exists() and final_path.exists():
+        if draft_path.stat().st_mtime >= final_path.stat().st_mtime:
+            return draft_path.read_text(encoding="utf-8")
+        return final_path.read_text(encoding="utf-8")
+    if draft_path.exists():
+        return draft_path.read_text(encoding="utf-8")
+    if final_path.exists():
+        return final_path.read_text(encoding="utf-8")
+    return ""
 
 
 def _load_env():
@@ -222,16 +248,34 @@ def _create_llm(temperature: float | None = None, model_env: str = "DEEPSEEK_MOD
 
     # 通用 OpenAI 兼容模式（deepseek / openai / zhipu / moonshot / qwen 都走这里）
     env_prefix = provider.upper() + "_"  # 如 ZHIPU_, MOONSHOT_
-    key = os.environ.get(f"{env_prefix}API_KEY", "") or os.environ.get("DEEPSEEK_API_KEY", "")
+    key = os.environ.get(f"{env_prefix}API_KEY", "")
+    if not key and provider == "deepseek":
+        key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not key:
-        raise HTTPException(400, f"请先配置 {provider} 的 API Key")
-    base_url = os.environ.get(f"{env_prefix}BASE_URL",
-                               os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"))
+        raise HTTPException(400, f"请先配置 {provider} 的 API Key（{env_prefix}API_KEY）")
+
+    preset = LLM_PROVIDERS.get(provider, {})
+    if provider == "deepseek":
+        base_url = (os.environ.get("DEEPSEEK_BASE_URL")
+                    or os.environ.get(f"{env_prefix}BASE_URL")
+                    or "https://api.deepseek.com/v1")
+    else:
+        base_url = os.environ.get(f"{env_prefix}BASE_URL") or preset.get("base_url", "")
+    # 非 deepseek 厂商缺少 Base URL 时不再静默回退到 DeepSeek 地址，直接报错避免请求发错地方
+    if not base_url:
+        raise HTTPException(400, f"请先配置 {provider} 的 Base URL（{env_prefix}BASE_URL）")
+
     # 仅当显式指定覆盖模型时生效（如 AUDITOR_MODEL）；默认调用不覆盖厂商模型
     model = (os.environ.get(model_env) if model_env != "DEEPSEEK_MODEL" else None)
     if not model:
-        model = os.environ.get(f"{env_prefix}MODEL") or os.environ.get("DEEPSEEK_MODEL") or "deepseek-chat"
-    cfg = LLMConfig(api_key=key, base_url=base_url, model=model, temperature=temp, max_tokens=max_tokens)
+        model = os.environ.get(f"{env_prefix}MODEL")
+    if not model and provider == "deepseek":
+        model = os.environ.get("DEEPSEEK_MODEL") or "deepseek-chat"
+    if not model:
+        model = preset.get("model", "")
+    if not model:
+        raise HTTPException(400, f"请先配置 {provider} 的模型名（{env_prefix}MODEL）")
+    cfg = LLMConfig(api_key=key, base_url=base_url, model=model, temperature=temperature if temperature is not None else temp, max_tokens=max_tokens)
     return _RetryLLMWrap(create_provider(cfg))
 
 
@@ -365,7 +409,26 @@ async def import_chapters(book_id: str, text: str = Form(...), start_chapter: in
         sm._write_json("config.json", cfg)
     except Exception:
         pass
-    
+
+    # 同步 world_state：导入已有章节后，续写必须从最后一章之后开始
+    try:
+        ws = sm.read_world_state()
+        if ws.current_chapter < ch_num - 1:
+            ws.current_chapter = ch_num - 1
+        # 角色位置未初始化时，补一个默认位置（首个地点或空）
+        if not ws.character_positions:
+            from core.setup import SetupLoader
+            try:
+                proj = SetupLoader.restore(PROJECT_ROOT, book_id)
+                first_loc = next(iter(proj.locations.keys()), "")
+                for char_id in proj.characters:
+                    ws.character_positions[char_id] = first_loc
+            except Exception:
+                pass
+        sm.write_world_state(ws)
+    except Exception:
+        pass
+
     return {"ok": True, "imported": imported, "last_chapter": ch_num - 1}
 
 
@@ -407,7 +470,14 @@ def create_book(req: CreateBookReq):
     from core.state import StateManager
     from core.types.state import BookConfig
 
-    book_id = req.title.replace(" ", "_").replace("/", "_")[:20]
+    # 生成唯一且合法的目录名：截断后若重名则追加序号
+    import re as _re
+    base_id = _re.sub(r'[\\/:*?"<>|\s]+', "_", req.title).strip("_")[:20] or "book"
+    book_id = base_id
+    suffix = 1
+    while (BOOKS_DIR / book_id).exists():
+        suffix += 1
+        book_id = f"{base_id}_{suffix}"
     config = BookConfig(
         id=book_id,
         title=req.title,
@@ -474,6 +544,7 @@ def setup_status(book_id: str):
     has_outline = (sm.state_dir / "outline.json").exists()
 
     files_status = {}
+    setup_state_path = sm.state_dir / "setup_state.json"
     for fname in ["characters.json", "world.json", "events.json"]:
         path = setup_dir / fname
         key = fname.replace(".json", "")
@@ -488,9 +559,14 @@ def setup_status(book_id: str):
                 }
                 lk = list_keys.get(key, list(data.keys())[0] if data else "")
                 items = data.get(lk, []) if lk else []
+                # 只有 setup 文件比 setup_state.json 新，才算「已修改未加载」
+                if setup_state_path.exists():
+                    modified = path.stat().st_mtime > setup_state_path.stat().st_mtime
+                else:
+                    modified = True
                 files_status[key] = {
                     "exists": True,
-                    "modified": True,
+                    "modified": modified,
                     "items": len(items) if isinstance(items, list) else 0,
                 }
             except Exception:
@@ -563,6 +639,26 @@ def setup_save(book_id: str, file_type: str, req: SaveSetupReq):
     except json.JSONDecodeError as e:
         raise HTTPException(400, f"JSON 格式错误：{e}")
 
+    # 结构校验：避免空壳或字段错位被直接保存，导致后续 setup load 失败
+    if not isinstance(data, dict):
+        raise HTTPException(400, "顶层必须是 JSON 对象")
+    if file_type == "characters":
+        chars = data.get("characters")
+        if not isinstance(chars, list):
+            raise HTTPException(400, "characters.json 必须有 characters 数组")
+        for i, c in enumerate(chars):
+            if not isinstance(c, dict) or not c.get("id") or not c.get("name"):
+                raise HTTPException(400, f"characters 第 {i+1} 项缺少 id 或 name")
+    elif file_type == "world":
+        if not isinstance(data.get("locations"), list):
+            raise HTTPException(400, "world.json 必须有 locations 数组")
+        for key in ("factions", "world_rules"):
+            if key in data and not isinstance(data[key], list):
+                raise HTTPException(400, f"world.json 的 {key} 必须是数组")
+    elif file_type == "events":
+        if not isinstance(data.get("events"), list):
+            raise HTTPException(400, "events.json 必须有 events 数组")
+
     setup_dir.mkdir(parents=True, exist_ok=True)
     path = setup_dir / filename
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -618,12 +714,20 @@ def promote_chapter(book_id: str, chapter: int):
     if not draft:
         raise HTTPException(404, f"第 {chapter} 章草稿不存在")
     sm.save_final(chapter, draft)
-    # 更新 current_chapter
+    # 更新 current_chapter（config 读出来是 dict，不能用属性访问）
     try:
         cfg = sm.read_config()
-        if (cfg.current_chapter or 0) < chapter:
-            cfg.current_chapter = chapter
-            sm.write_config(cfg)
+        if (cfg.get("current_chapter") or 0) < chapter:
+            cfg["current_chapter"] = chapter
+            sm._write_json("config.json", cfg)
+    except Exception:
+        pass
+    # 同步 world_state 的进度，保证后续写作从正确章节开始
+    try:
+        ws = sm.read_world_state()
+        if ws.current_chapter < chapter:
+            ws.current_chapter = chapter
+            sm.write_world_state(ws)
     except Exception:
         pass
     return {"ok": True, "message": f"第 {chapter} 章已升级为最终稿"}
@@ -632,11 +736,16 @@ def promote_chapter(book_id: str, chapter: int):
 @app.get("/api/books/{book_id}/chapters/{chapter}")
 def get_chapter(book_id: str, chapter: int):
     sm = _sm(book_id)
-    content = sm.read_final(chapter) or sm.read_draft(chapter)
+    content = _latest_chapter_text(sm, chapter)
     if not content:
         raise HTTPException(404, f"第 {chapter} 章不存在")
-    kind = "final" if (sm.chapter_dir / f"ch{chapter:04d}_final.md").exists() else "draft"
-    return {"number": chapter, "kind": kind, "content": content, "chars": len(content)}
+    # 以较新的文件判定版本，避免重新生成后仍显示旧定稿
+    draft_path = sm.chapter_dir / f"ch{chapter:04d}_draft.md"
+    final_path = sm.chapter_dir / f"ch{chapter:04d}_final.md"
+    is_final = final_path.exists() and (
+        not draft_path.exists() or final_path.stat().st_mtime >= draft_path.stat().st_mtime)
+    return {"number": chapter, "kind": "final" if is_final else "draft",
+            "content": content, "chars": len(content)}
 
 
 # ── /api/books/{book_id}/causal-chain ────────────────────────────────────────
@@ -1020,20 +1129,50 @@ def get_chapter_outlines(book_id: str):
 
 @app.put("/api/books/{book_id}/outline")
 def save_outline(book_id: str, req: SaveOutlineReq):
-    """保存/更新大纲"""
+    """保存/更新大纲（先规范化 + schema 校验，避免存进坏结构）"""
     sm = _sm(book_id)
+    from core.narrative import StoryOutlineSchema
+
+    raw = _normalize_outline(dict(req.outline), sm)
+    if not raw.get("sequences"):
+        raise HTTPException(400, "大纲至少需要一个 sequences 序列")
+    try:
+        validated = StoryOutlineSchema.model_validate(raw)
+    except Exception as e:
+        raise HTTPException(400, f"大纲结构校验失败：{e}")
+
+    data = validated.model_dump()
     outline_path = sm.state_dir / "outline.json"
-    outline_path.write_text(json.dumps(req.outline, ensure_ascii=False, indent=2), encoding="utf-8")
+    outline_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 同步当前卷专属大纲，否则切换卷后本卷修改会丢失
+    arc_id = _current_arc_id(sm)
+    if arc_id:
+        _arc_outline_path(sm, arc_id).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"ok": True, "message": "大纲已保存"}
 
 
 @app.put("/api/books/{book_id}/chapter-outlines")
 def save_chapter_outlines(book_id: str, req: SaveChapterOutlinesReq):
-    """保存/更新章纲"""
+    """保存/更新章纲（校验基本字段，防止前端写入坏数据）"""
     sm = _sm(book_id)
+    cleaned = []
+    for i, item in enumerate(req.outlines):
+        if not isinstance(item, dict):
+            raise HTTPException(400, f"第 {i+1} 个章纲不是 JSON 对象")
+        if not isinstance(item.get("chapter_number"), int):
+            raise HTTPException(400, f"第 {i+1} 个章纲缺少整数 chapter_number")
+        if not item.get("summary"):
+            raise HTTPException(400, f"第 {i+1} 个章纲缺少 summary")
+        cleaned.append(item)
     path = sm.state_dir / "chapter_outlines.json"
-    path.write_text(json.dumps(req.outlines, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"ok": True, "message": f"已保存 {len(req.outlines)} 章章纲"}
+    content = json.dumps(cleaned, ensure_ascii=False, indent=2)
+    path.write_text(content, encoding="utf-8")
+    # 同步当前卷章纲文件，保证切卷回来时内容不丢失
+    arc_id = _current_arc_id(sm)
+    if arc_id:
+        _arc_chapter_outlines_path(sm, arc_id).write_text(content, encoding="utf-8")
+    return {"ok": True, "message": f"已保存 {len(cleaned)} 章章纲"}
 
 
 # ── 篇幅总规划（多篇章/Arc 管理） ────────────────────────────────────────────
@@ -1068,6 +1207,31 @@ def _arc_outline_path(sm, arc_id: str) -> Path:
     return sm.state_dir / f"{arc_id}_outline.json"
 
 
+def _arc_chapter_outlines_path(sm, arc_id: str) -> Path:
+    return sm.state_dir / f"{arc_id}_chapter_outlines.json"
+
+
+def _save_current_chapter_outlines_to_arc(sm, arc_id: str) -> None:
+    """把当前卷的章纲存到该卷专属文件，切换卷时不会互相覆盖"""
+    path = sm.state_dir / "chapter_outlines.json"
+    if not path.exists():
+        return
+    arc_path = _arc_chapter_outlines_path(sm, arc_id)
+    arc_path.write_text(_read_json_file(path), encoding="utf-8")
+
+
+def _load_arc_chapter_outlines_to_current(sm, arc_id: str) -> None:
+    """把指定卷的章纲加载为当前章纲；该卷还没有章纲时写空数组，避免显示上一卷"""
+    arc_path = _arc_chapter_outlines_path(sm, arc_id)
+    path = sm.state_dir / "chapter_outlines.json"
+    if arc_path.exists():
+        content = _read_json_file(arc_path)
+        json.loads(content)  # 校验
+        path.write_text(content, encoding="utf-8")
+    else:
+        path.write_text("[]", encoding="utf-8")
+
+
 def _novel_plan_path(sm) -> Path:
     return sm.state_dir / "novel_plan.json"
 
@@ -1097,6 +1261,18 @@ def _ensure_novel_plan(sm) -> dict:
     np_path.write_text(json.dumps(novel_plan, ensure_ascii=False, indent=2), encoding="utf-8")
     _save_current_outline_to_arc(sm, "arc_001")
     return novel_plan
+
+
+def _current_arc_id(sm) -> str:
+    """读取当前卷 ID；novel_plan 不存在时返回空串（不主动创建，避免副作用）"""
+    np_path = _novel_plan_path(sm)
+    if not np_path.exists():
+        return ""
+    try:
+        data = json.loads(np_path.read_text(encoding="utf-8"))
+        return str(data.get("current_arc_id", "") or "")
+    except (json.JSONDecodeError, OSError):
+        return ""
 
 
 def _read_json_file(path: Path) -> str:
@@ -1135,7 +1311,7 @@ def _load_arc_outline_to_current(sm, arc_id: str) -> None:
             "logline": "",
             "genre": cfg.get("genre", "玄幻"),
             "sequences": [],
-            "emotional_roadmap": "",
+            "emotional_roadmap": [],
         }
         outline_path.write_text(json.dumps(new_outline, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1165,7 +1341,9 @@ def switch_arc(book_id: str, req: SwitchArcReq):
         return {"ok": True, "message": "已是当前篇章", "arc_id": req.arc_id}
 
     _save_current_outline_to_arc(sm, old_arc_id)
+    _save_current_chapter_outlines_to_arc(sm, old_arc_id)
     _load_arc_outline_to_current(sm, req.arc_id)
+    _load_arc_chapter_outlines_to_current(sm, req.arc_id)
 
     novel_plan["current_arc_id"] = req.arc_id
     np_path = _novel_plan_path(sm)
@@ -1184,6 +1362,7 @@ def add_arc(book_id: str, arc: ArcInfo):
 
     old_arc_id = novel_plan.get("current_arc_id", "arc_001")
     _save_current_outline_to_arc(sm, old_arc_id)
+    _save_current_chapter_outlines_to_arc(sm, old_arc_id)
 
     novel_plan["arcs"].append({
         "id": arc.id,
@@ -1193,7 +1372,10 @@ def add_arc(book_id: str, arc: ArcInfo):
         "assigned_event_ids": arc.assigned_event_ids,
     })
 
+    # 新建卷后直接切换为当前卷，否则后续章纲/大纲仍写进旧卷，导致「新建了卷却看不到内容」
+    novel_plan["current_arc_id"] = arc.id
     _load_arc_outline_to_current(sm, arc.id)
+    _load_arc_chapter_outlines_to_current(sm, arc.id)
 
     np_path = _novel_plan_path(sm)
     np_path.write_text(json.dumps(novel_plan, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1518,12 +1700,13 @@ async def ai_generate_arc_events(book_id: str, req: AiGenEventsReq):
     if outline_path.exists():
         try:
             outline = json.loads(_read_json_file(outline_path))
-            acts = outline.get("acts", [])
-            if acts:
-                for act in acts[:3]:
-                    seqs = act.get("sequences", [])
-                    for seq in seqs[:4]:
-                        outline_summary += f"- 第{act.get('number', '?')}幕 序列{seq.get('number', '?')}：{seq.get('summary', '')}\n"
+            # 当前大纲 schema 只有 sequences（没有 acts 嵌套层级）
+            sequences = outline.get("sequences", [])
+            for seq in sequences[:12]:
+                outline_summary += (
+                    f"- 序列{seq.get('number', '?')}"
+                    f"（第{seq.get('act', '?')}幕）：{seq.get('summary', '')}\n"
+                )
         except Exception:
             pass
 
@@ -1687,17 +1870,21 @@ def import_outline(book_id: str, req: ImportOutlineReq):
     except Exception as e:
         raise HTTPException(400, f"大纲规范化失败：{e}")
 
-    # 用 Pydantic 验证
+    # 用 Pydantic 验证：坏结构不落盘，否则后续章纲/正文生成必然失败
     try:
         from core.narrative import StoryOutlineSchema
-        StoryOutlineSchema.model_validate_json(json.dumps(raw, ensure_ascii=False))
+        validated = StoryOutlineSchema.model_validate_json(json.dumps(raw, ensure_ascii=False))
+        raw = validated.model_dump()
     except Exception as e:
-        # 即使 Pydantic 验证失败也保存（用户可手动修正），只给警告
-        logging.warning(f"大纲 Pydantic 验证警告：{e}")
+        raise HTTPException(400, f"大纲结构校验失败：{e}")
 
-    # 保存
+    # 保存（同时同步当前卷大纲）
+    outline_content = json.dumps(raw, ensure_ascii=False, indent=2)
     outline_path = sm.state_dir / "outline.json"
-    outline_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+    outline_path.write_text(outline_content, encoding="utf-8")
+    _arc_id = _current_arc_id(sm)
+    if _arc_id:
+        _arc_outline_path(sm, _arc_id).write_text(outline_content, encoding="utf-8")
 
     # 更新 config 中的 target_chapters
     try:
@@ -1786,8 +1973,9 @@ def import_chapter_outlines(book_id: str, req: ImportChapterOutlinesReq):
         # 找到已有章纲的最大编号
         max_ch = max((c.get("chapter_number", 0) for c in all_cos), default=0)
         # 重新编号导入的章纲（从 max_ch+1 开始）
-        for co in req.outlines:
-            co["chapter_number"] = max_ch + req.outlines.index(co) + 1
+        # 用 enumerate 而不是 list.index()，否则重复对象会拿到同一个下标导致章号重复
+        for offset, co in enumerate(req.outlines):
+            co["chapter_number"] = max_ch + offset + 1
             # 同步更新 beat id
             for bi, beat in enumerate(co.get("beats", [])):
                 beat["id"] = f"beat_{co['chapter_number']}_{bi+1}"
@@ -1800,8 +1988,12 @@ def import_chapter_outlines(book_id: str, req: ImportChapterOutlinesReq):
             for bi, beat in enumerate(co.get("beats", [])):
                 beat["id"] = f"beat_{co['chapter_number']}_{bi+1}"
 
-    # 保存
-    co_path.write_text(json.dumps(all_cos, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 保存（同时同步当前卷章纲文件）
+    co_content = json.dumps(all_cos, ensure_ascii=False, indent=2)
+    co_path.write_text(co_content, encoding="utf-8")
+    _arc_id = _current_arc_id(sm)
+    if _arc_id:
+        _arc_chapter_outlines_path(sm, _arc_id).write_text(co_content, encoding="utf-8")
 
     # 更新 config
     try:
@@ -1849,8 +2041,11 @@ async def continue_writing(book_id: str, req: ContinueWritingReq):
     
     all_cos = json.loads(co_path.read_text(encoding="utf-8"))
     current_count = len(all_cos)
-    start_ch = current_count + 1
-    end_ch = current_count + req.extra_chapters
+    # 多卷场景下章号是全局连续的，续写必须接在已有最大章号之后，不能按数组长度重排
+    last_ch = max((int(co.get("chapter_number", 0) or 0) for co in all_cos), default=0)
+    base_ch = last_ch or current_count
+    start_ch = base_ch + 1
+    end_ch = start_ch + req.extra_chapters - 1
 
     # 读取大纲和配置获取上下文
     outline_data = {}
@@ -1902,6 +2097,9 @@ async def continue_writing(book_id: str, req: ContinueWritingReq):
 
     from core.llm import LLMMessage
 
+    # 本次应新增的章数（联动模式下受未覆盖序列章数限制）
+    expected_count = req.extra_chapters
+
     if uncovered_seqs:
         # 联动模式：基于故事大纲中未覆盖的序列来续写章节大纲
         seq_context = "\n".join(
@@ -1913,6 +2111,7 @@ async def continue_writing(book_id: str, req: ContinueWritingReq):
         )
         total_uncovered = sum(s["estimated_scenes"] for s in uncovered_seqs)
         actual_count = min(req.extra_chapters, total_uncovered)
+        expected_count = actual_count
         end_ch = start_ch + actual_count - 1
         prompt = f"""你是一位专业的小说编辑。现在需要基于故事大纲中尚未展开的序列，续写章节大纲。
 
@@ -2011,6 +2210,12 @@ async def continue_writing(book_id: str, req: ContinueWritingReq):
         raise HTTPException(500, f"续写失败：{e}")
 
     # 修正 chapter_number、beats 并追加
+    # 只接受合法的章纲对象，并裁剪到本次请求允许的章数，防止模型多输出造成章号错位
+    new_cos = [co for co in new_cos if isinstance(co, dict)]
+    if len(new_cos) > expected_count:
+        new_cos = new_cos[:expected_count]
+    if not new_cos:
+        raise HTTPException(500, "续写失败：模型未返回任何章纲")
     for i, co in enumerate(new_cos):
         co["chapter_number"] = start_ch + i
         # 修正 dramatic_function 和缺失的 beat id
@@ -2022,10 +2227,15 @@ async def continue_writing(book_id: str, req: ContinueWritingReq):
             if beat.get("dramatic_function"):
                 beat["dramatic_function"] = _DF_MAP.get(beat["dramatic_function"], beat["dramatic_function"])
     all_cos.extend(new_cos)
-    co_path.write_text(json.dumps(all_cos, ensure_ascii=False, indent=2), encoding="utf-8")
+    content = json.dumps(all_cos, ensure_ascii=False, indent=2)
+    co_path.write_text(content, encoding="utf-8")
+    # 续写内容同步到当前卷章纲文件，切卷后不丢失
+    arc_id = _current_arc_id(sm)
+    if arc_id:
+        _arc_chapter_outlines_path(sm, arc_id).write_text(content, encoding="utf-8")
 
-    # 更新 config 的 target_chapters
-    cfg_data["target_chapters"] = len(all_cos)
+    # 更新 config 的 target_chapters（按全局章号，而非当前卷数组长度）
+    cfg_data["target_chapters"] = base_ch + len(new_cos)
     sm._write_json("config.json", cfg_data)
 
     return {
@@ -2177,7 +2387,13 @@ async def ai_generate_setup(book_id: str, req: AiGenerateSetupReq):
         data = json.loads(content)
         return {"ok": True, "data": data}
     except json.JSONDecodeError as e:
-        return {"ok": False, "error": f"AI 输出 JSON 解析失败：{e}", "raw": content[-500:] if content else ""}
+        # 兼容裸属性名 / 截断的 JSON（长 JSON 输出常见问题）
+        from core.llm import _repair_truncated_json
+        try:
+            data = json.loads(_repair_truncated_json(content))
+            return {"ok": True, "data": data, "repaired": True}
+        except json.JSONDecodeError:
+            return {"ok": False, "error": f"AI 输出 JSON 解析失败：{e}", "raw": content[-500:] if content else ""}
     except Exception as e:
         raise HTTPException(500, f"AI 生成失败：{e}")
 
@@ -2286,7 +2502,13 @@ async def extract_from_novel(book_id: str, req: ExtractFromNovelReq):
         data = json.loads(content)
         return {"ok": True, "data": data}
     except json.JSONDecodeError as e:
-        return {"ok": False, "error": f"AI 输出 JSON 解析失败：{e}", "raw": content[-500:] if content else ""}
+        # 兼容裸属性名 / 截断的 JSON（长 JSON 输出常见问题）
+        from core.llm import _repair_truncated_json
+        try:
+            data = json.loads(_repair_truncated_json(content))
+            return {"ok": True, "data": data, "repaired": True}
+        except json.JSONDecodeError:
+            return {"ok": False, "error": f"AI 输出 JSON 解析失败：{e}", "raw": content[-500:] if content else ""}
     except Exception as e:
         raise HTTPException(500, f"提取失败：{e}")
 
@@ -2301,7 +2523,7 @@ async def extract_story_state(book_id: str, req: ExtractStoryStateReq):
     """从已有章节正文提取故事状态数据（时间线事件、情感、关系、伏笔、因果链）"""
     _load_env()
     sm = _sm(book_id)
-    content = sm.read_final(req.chapter) or sm.read_draft(req.chapter)
+    content = _latest_chapter_text(sm, req.chapter)
     if not content:
         raise HTTPException(404, f"第 {req.chapter} 章不存在")
 
@@ -2312,19 +2534,38 @@ async def extract_story_state(book_id: str, req: ExtractStoryStateReq):
 
     from core.llm import LLMMessage
     from core.state import StateManager
-    from core.types.state import EmotionalSnapshot, CausalLink, AffectedDecision, Hook, HookType, HookStatus, RelationshipRecord
+    from core.types.state import EmotionalSnapshot, CausalLink, AffectedDecision, Hook, HookType, HookStatus, RelationshipRecord, KnownInfoRecord
 
     # 截断避免超token
     content_for_llm = content[:8000] + ("\n\n...（截断）" if len(content) > 8000 else "")
 
-    # 加载角色列表，让 LLM 知道角色名
+    # 加载角色列表，让 LLM 知道角色名；同时建立「角色名 → 角色 ID」映射
     char_list = []
+    char_name_to_id: dict[str, str] = {}
     try:
         chars_data = sm.read_characters()
-        if isinstance(chars_data, dict) and "characters" in chars_data:
-            char_list = [c.get("name", "") for c in chars_data["characters"] if c.get("name")]
+        # read_characters 返回 {char_id: 角色字典}
+        for cid, c in (chars_data.items() if isinstance(chars_data, dict) else []):
+            if not isinstance(c, dict):
+                continue
+            name = c.get("name", "")
+            if name:
+                char_list.append(name)
+                char_name_to_id[name] = cid
     except Exception:
         pass
+
+    def _cid(name_or_id: str) -> str:
+        """把 LLM 输出的角色名统一映射为角色 ID；映射不到则原样返回"""
+        if not name_or_id:
+            return name_or_id
+        if name_or_id in char_name_to_id:
+            return char_name_to_id[name_or_id]
+        # 模糊匹配：如「陈一帆」vs「陈一帆（主角）」
+        for name, cid in char_name_to_id.items():
+            if name in name_or_id or name_or_id in name:
+                return cid
+        return name_or_id
 
     char_hint = ""
     if char_list:
@@ -2446,11 +2687,28 @@ async def extract_story_state(book_id: str, req: ExtractStoryStateReq):
     # 应用到 world_state
     import uuid
     ws = sm.read_world_state()
-    applied = {"emotions": 0, "positions": 0, "relationships": 0, "hooks": 0, "timeline": 0, "info": 0, "causal": 0}
+    applied = {"emotions": 0, "positions": 0, "relationships": 0, "hooks": 0, "timeline": 0, "info": 0, "causal": 0, "hooks_resolved": 0}
 
-    # 位置变化
+    # ── 同章重复提取的幂等处理：先移除本章旧数据，再重新写入 ──
+    # 正文生成后已自动结算一次，用户再点「提取数据」不应产生重复记录
+    ws.emotional_snapshots = [s for s in ws.emotional_snapshots if s.chapter != req.chapter]
+    ws.timeline = [e for e in ws.timeline if getattr(e, "chapter", None) != req.chapter]
+    ws.causal_chain = [c for c in ws.causal_chain if c.chapter != req.chapter]
+    # 关系：回滚本章增量，避免重复提取导致关系强度翻倍
+    for rel in ws.relationships:
+        removed = [d for d in rel.history if d.chapter == req.chapter]
+        if removed:
+            rel.history = [d for d in rel.history if d.chapter != req.chapter]
+            rel.strength = max(-100, min(100, rel.strength - sum(d.delta for d in removed)))
+    # 伏笔：移除本章植入且仍开放的；已回收的保留，避免破坏后续章的回收记录
+    ws.pending_hooks = [
+        h for h in ws.pending_hooks
+        if not (h.planted_in_chapter == req.chapter and h.status == HookStatus.OPEN)
+    ]
+
+    # 位置变化（角色名统一映射为 ID）
     for pc in data.get("position_changes", []):
-        char_id = pc.get("character") or pc.get("character_id") or pc.get("character_name", "")
+        char_id = _cid(pc.get("character") or pc.get("character_id") or pc.get("character_name", ""))
         loc = pc.get("location", "")
         if char_id and loc:
             ws.character_positions[char_id] = loc
@@ -2458,13 +2716,17 @@ async def extract_story_state(book_id: str, req: ExtractStoryStateReq):
 
     # 情感变化
     for ec in data.get("emotional_changes", []):
-        char_id = ec.get("character") or ec.get("character_id") or ec.get("character_name", "")
+        char_id = _cid(ec.get("character") or ec.get("character_id") or ec.get("character_name", ""))
         if not char_id:
             continue
+        try:
+            intensity = int(ec.get("intensity", 5))
+        except (TypeError, ValueError):
+            intensity = 5
         snap = EmotionalSnapshot(
             character_id=char_id,
             emotion=ec.get("emotion", "未知"),
-            intensity=int(ec.get("intensity", 5)),
+            intensity=max(1, min(10, intensity)),
             chapter=req.chapter,
             trigger=ec.get("trigger", ""),
         )
@@ -2473,9 +2735,12 @@ async def extract_story_state(book_id: str, req: ExtractStoryStateReq):
 
     # 关系变化
     for rc in data.get("relationship_changes", []):
-        char_a = rc.get("character_a", "")
-        char_b = rc.get("character_b", "")
-        delta = int(rc.get("delta", 0))
+        char_a = _cid(rc.get("character_a", ""))
+        char_b = _cid(rc.get("character_b", ""))
+        try:
+            delta = int(rc.get("delta", 0))
+        except (TypeError, ValueError):
+            delta = 0
         reason = rc.get("reason", "")
         if char_a and char_b and delta != 0:
             from core.types.state import RelationshipType, RelationshipDelta
@@ -2496,98 +2761,126 @@ async def extract_story_state(book_id: str, req: ExtractStoryStateReq):
                     rel.type = RelationshipType.ENEMY
             applied["relationships"] += 1
 
-    # 新伏笔
+    # 信息揭示（用 dataclass 而不是 dict，避免写盘时结构错乱）
+    for info in data.get("info_revealed", []):
+        char_id = _cid(info.get("character") or info.get("character_id", ""))
+        info_key = info.get("info_key", "")
+        info_content = info.get("content", "")
+        if char_id and info_key and not ws.character_knows(char_id, info_key):
+            ws.known_info.append(KnownInfoRecord(
+                character_id=char_id,
+                info_key=info_key,
+                content=info_content,
+                learned_in_chapter=req.chapter,
+                source="witnessed",
+            ))
+            applied["info"] += 1
+
+    # 新伏笔先收集，写盘后通过 StateManager 写入（可同步 pending_hooks.md）
+    hooks_to_open: list[Hook] = []
     for h_desc in data.get("hooks_planted", []):
-        if h_desc:
-            hook = Hook(
+        if h_desc and isinstance(h_desc, str):
+            hooks_to_open.append(Hook(
                 id=f"hook_{uuid.uuid4().hex[:8]}",
                 type=HookType.FORESHADOW,
                 description=h_desc,
                 planted_in_chapter=req.chapter,
                 expected_resolution_range=(req.chapter + 3, req.chapter + 25),
                 status=HookStatus.OPEN,
-            )
-            ws.pending_hooks.append(hook)
+            ))
             applied["hooks"] += 1
 
-    # 信息揭示
-    for info in data.get("info_revealed", []):
-        char_id = info.get("character") or info.get("character_id", "")
-        info_key = info.get("info_key", "")
-        info_content = info.get("content", "")
-        if char_id and info_key:
-            ws.known_info.append({"character_id": char_id, "info_key": info_key, "content": info_content, "learned_in_chapter": req.chapter, "source": "witnessed"})
-            applied["info"] += 1
+    # 回收伏笔：LLM 给的是描述，需要在现有 open 伏笔里按描述匹配出 ID
+    hooks_to_resolve: list[str] = []
+    open_hooks = ws.open_hooks()
+    for desc in data.get("hooks_resolved", []):
+        if not desc or not isinstance(desc, str):
+            continue
+        matched = None
+        for h in open_hooks:
+            if h.description and (h.description in desc or desc in h.description):
+                matched = h
+                break
+        if matched and matched.id not in hooks_to_resolve:
+            hooks_to_resolve.append(matched.id)
+            applied["hooks_resolved"] += 1
 
-    # 因果链
+    # 因果链先收集，写盘后通过 StateManager 写入（可同步 causal_chain.md）
+    causal_to_add: list[CausalLink] = []
     cl_data = data.get("causal_link", {})
-    if cl_data and cl_data.get("event"):
-        cl = CausalLink(
+    if isinstance(cl_data, dict) and cl_data.get("event"):
+        causal_to_add.append(CausalLink(
             id=f"cl_{uuid.uuid4().hex[:8]}",
             chapter=req.chapter,
             cause=cl_data.get("cause", ""),
             event=cl_data.get("event", ""),
             consequence=cl_data.get("consequence", ""),
             thread_id=req.thread_id,
-        )
-        ws.causal_chain.append(cl)
+        ))
         applied["causal"] += 1
 
-    # 构建角色名 → 线程ID 的映射（用于时间轴事件分配，只匹配已有线程）
+    # 构建角色（ID 与名字）→ 线程ID 的映射（用于时间轴事件分配，只匹配已有线程）
     char_to_thread: dict[str, str] = {}
     for t in ws.threads:
-        # 通过 pov_character_id 匹配
         if t.pov_character_id:
             char_to_thread[t.pov_character_id] = t.id
-        # 通过 character_ids 匹配
         for cid in getattr(t, 'character_ids', []) or []:
             char_to_thread[cid] = t.id
-        # 通过线程名中的角色名模糊匹配
         if t.name:
             char_to_thread.setdefault(t.name, t.id)
+    # 把角色名也映射到线程（名字先转成 ID 再查）
+    for name, cid in char_name_to_id.items():
+        if cid in char_to_thread:
+            char_to_thread.setdefault(name, char_to_thread[cid])
 
     # 尝试从章纲获取当前章节的 thread_id（优先于请求参数）
     co_path = sm.state_dir / "chapter_outlines.json"
     if co_path.exists():
-        co_data = json.loads(co_path.read_text(encoding="utf-8"))
-        for co in co_data:
-            if co.get("chapter_number") == req.chapter and co.get("thread_id"):
-                req.thread_id = co["thread_id"]
-                break
+        try:
+            co_data = json.loads(co_path.read_text(encoding="utf-8"))
+            for co in co_data:
+                if co.get("chapter_number") == req.chapter and co.get("thread_id"):
+                    req.thread_id = co["thread_id"]
+                    break
+        except json.JSONDecodeError:
+            pass
 
     def _resolve_thread_id(character_name: str) -> str:
-        """根据角色名查找对应的线程ID，找不到则回退到章纲线程或默认"""
+        """根据角色名/ID 查找线程 ID，找不到则回退到章纲线程"""
         if not character_name:
             return req.thread_id
-        # 精确匹配
         if character_name in char_to_thread:
             return char_to_thread[character_name]
-        # 模糊匹配：角色名包含在线程名或pov中
+        cid = _cid(character_name)
+        if cid in char_to_thread:
+            return char_to_thread[cid]
         for cname, tid in char_to_thread.items():
             if cname in character_name or character_name in cname:
                 return tid
         return req.thread_id
 
-    # 时间轴事件
+    # 时间轴事件（角色 ID 统一映射）
     time_order = float(req.chapter)
     counter = 0
     for ke in data.get("key_events", []):
+        if not isinstance(ke, dict) or not ke.get("action"):
+            continue
         counter += 1
-        ke_char = ke.get("character") or ke.get("character_id", "")
+        raw_char = ke.get("character") or ke.get("character_id", "")
         event = {
             "id": f"te_{uuid.uuid4().hex[:8]}",
             "chapter": req.chapter,
             "physical_time": "",
             "time_order": time_order + counter * 0.1,
-            "character_id": ke_char,
+            "character_id": _cid(raw_char),
             "location_id": "",
             "action": ke.get("action", ""),
             "type": ke.get("type", "other"),
             "is_key": ke.get("type") == "key",
-            "thread_id": _resolve_thread_id(ke_char),
+            "thread_id": _resolve_thread_id(raw_char),
         }
         ws.timeline.append(event)
-        # 同步更新事件所属线程的 last_active_chapter（与 sm.add_timeline_event 保持一致）
+        # 同步更新事件所属线程的 last_active_chapter
         tid = event["thread_id"]
         if tid:
             for t in ws.threads:
@@ -2600,6 +2893,18 @@ async def extract_story_state(book_id: str, req: ExtractStoryStateReq):
         ws.current_chapter = req.chapter
 
     sm.write_world_state(ws)
+
+    # 清理后先按 JSON 重建 md，再追加本章新数据，避免 md 里残留重复条目
+    sm.rebuild_pending_hooks_md()
+    sm.rebuild_causal_chain_md()
+
+    # 伏笔 / 因果链通过 StateManager 写入，保证 JSON 与 md 真相文件同步
+    for hook in hooks_to_open:
+        sm.open_hook(hook)
+    for hook_id in hooks_to_resolve:
+        sm.resolve_hook(hook_id, req.chapter)
+    for cl in causal_to_add:
+        sm.add_causal_link(cl)
 
     # 更新真相文件
     sm.update_current_state_md()
@@ -2661,17 +2966,33 @@ async def extract_story_state_batch(book_id: str):
         raise HTTPException(400, f"LLM 创建失败：{e}")
 
     from core.llm import LLMMessage
-    from core.types.state import EmotionalSnapshot, CausalLink, Hook, HookType, HookStatus, RelationshipRecord
+    from core.types.state import EmotionalSnapshot, CausalLink, Hook, HookType, HookStatus, RelationshipRecord, KnownInfoRecord
     import uuid as _uuid
 
-    # 加载角色列表（所有章节共用）
+    # 加载角色列表（所有章节共用），并建立角色名 → ID 映射
     char_list = []
+    char_name_to_id: dict[str, str] = {}
     try:
         chars_data = sm.read_characters()
-        if isinstance(chars_data, dict) and "characters" in chars_data:
-            char_list = [c.get("name", "") for c in chars_data["characters"] if c.get("name")]
+        for cid, c in (chars_data.items() if isinstance(chars_data, dict) else []):
+            if not isinstance(c, dict):
+                continue
+            name = c.get("name", "")
+            if name:
+                char_list.append(name)
+                char_name_to_id[name] = cid
     except Exception:
         pass
+
+    def _cid(name_or_id: str) -> str:
+        if not name_or_id:
+            return name_or_id
+        if name_or_id in char_name_to_id:
+            return char_name_to_id[name_or_id]
+        for name, cid in char_name_to_id.items():
+            if name in name_or_id or name_or_id in name:
+                return cid
+        return name_or_id
     char_hint = ""
     if char_list:
         char_hint = f"\n已知角色名单：{', '.join(char_list)}\n"
@@ -2680,10 +3001,10 @@ async def extract_story_state_batch(book_id: str):
     extracted_count = 0
 
     for ch in to_extract:
-        content = sm.read_final(ch) or sm.read_draft(ch)
+        content = _latest_chapter_text(sm, ch)
         if not content:
             results.append({"chapter": ch, "ok": False, "error": "章节文件不存在"})
-            break  # 失败就中断
+            continue  # 跳过错章，继续后面的章
 
         content_for_llm = content[:8000] + ("\n\n...（截断）" if len(content) > 8000 else "")
 
@@ -2774,31 +3095,37 @@ async def extract_story_state_batch(book_id: str):
                         data = json.loads(_repair(_repair_truncated_json(raw)))
                     except json.JSONDecodeError:
                         results.append({"chapter": ch, "ok": False, "error": "JSON 解析失败"})
-                        break  # 失败就中断
+                        # data 保持 None，交由下方统一跳转到下一章
 
             if data is None:
-                results.append({"chapter": ch, "ok": False, "error": "JSON 解析结果为空"})
-                break
+                # 本章解析失败，记录后继续下一章
+                if not any(r.get("chapter") == ch and not r.get("ok") for r in results):
+                    results.append({"chapter": ch, "ok": False, "error": "JSON 解析结果为空"})
+                continue
 
             # 应用到 world_state（和单章提取逻辑一致）
             ws = sm.read_world_state()
             applied = {"emotions": 0, "positions": 0, "relationships": 0, "hooks": 0, "timeline": 0, "info": 0, "causal": 0}
 
             for pc in data.get("position_changes", []):
-                char_id = pc.get("character") or pc.get("character_id", "")
+                char_id = _cid(pc.get("character") or pc.get("character_id", ""))
                 loc = pc.get("location", "")
                 if char_id and loc:
                     ws.character_positions[char_id] = loc
                     applied["positions"] += 1
 
             for ec in data.get("emotional_changes", []):
-                char_id = ec.get("character") or ec.get("character_id", "")
+                char_id = _cid(ec.get("character") or ec.get("character_id", ""))
                 if not char_id:
                     continue
+                try:
+                    intensity = int(ec.get("intensity", 5))
+                except (TypeError, ValueError):
+                    intensity = 5
                 snap = EmotionalSnapshot(
                     character_id=char_id,
                     emotion=ec.get("emotion", "未知"),
-                    intensity=int(ec.get("intensity", 5)),
+                    intensity=max(1, min(10, intensity)),
                     chapter=ch,
                     trigger=ec.get("trigger", ""),
                 )
@@ -2806,10 +3133,13 @@ async def extract_story_state_batch(book_id: str):
                 applied["emotions"] += 1
 
             for rc in data.get("relationship_changes", []):
-                a = rc.get("character_a", "")
-                b = rc.get("character_b", "")
+                a = _cid(rc.get("character_a", ""))
+                b = _cid(rc.get("character_b", ""))
                 if a and b:
-                    delta_val = int(rc.get("delta", 0))
+                    try:
+                        delta_val = int(rc.get("delta", 0))
+                    except (TypeError, ValueError):
+                        delta_val = 0
                     reason = rc.get("reason", "")
                     from core.types.state import RelationshipType, RelationshipDelta as RelDelta
                     key = ":".join(sorted([a, b]))
@@ -2825,39 +3155,47 @@ async def extract_story_state_batch(book_id: str):
                         rel.type = RelationshipType.RIVAL
                     applied["relationships"] += 1
 
+            # 伏笔先收集，写盘后通过 StateManager 写入（同步 pending_hooks.md）
+            hooks_to_open = []
             for h_desc in data.get("hooks_planted", []):
-                if not h_desc or not h_desc.strip():
+                if not h_desc or not str(h_desc).strip():
                     continue
-                hook = Hook(
+                hooks_to_open.append(Hook(
                     id=f"hook_{_uuid.uuid4().hex[:8]}",
                     type=HookType.FORESHADOW,
                     description=str(h_desc).strip(),
                     planted_in_chapter=ch,
                     expected_resolution_range=(ch + 3, ch + 25),
                     status=HookStatus.OPEN,
-                )
-                ws.pending_hooks.append(hook)
+                ))
                 applied["hooks"] += 1
 
             for info in data.get("info_revealed", []):
-                char_id = info.get("character") or info.get("character_id", "")
+                char_id = _cid(info.get("character") or info.get("character_id", ""))
                 info_key = info.get("info_key", "")
                 info_content = info.get("content", "")
-                if char_id and info_key:
-                    ws.known_info.append({"character_id": char_id, "info_key": info_key, "content": info_content, "learned_in_chapter": ch, "source": "witnessed"})
+                if char_id and info_key and not ws.character_knows(char_id, info_key):
+                    ws.known_info.append(KnownInfoRecord(
+                        character_id=char_id,
+                        info_key=info_key,
+                        content=info_content,
+                        learned_in_chapter=ch,
+                        source="witnessed",
+                    ))
                     applied["info"] += 1
 
+            # 因果链先收集，写盘后通过 StateManager 写入（同步 causal_chain.md）
+            causal_to_add = []
             cl_data = data.get("causal_link", {})
-            if cl_data and cl_data.get("event"):
-                cl = CausalLink(
+            if isinstance(cl_data, dict) and cl_data.get("event"):
+                causal_to_add.append(CausalLink(
                     id=f"cl_{_uuid.uuid4().hex[:8]}",
                     chapter=ch,
                     cause=cl_data.get("cause", ""),
                     event=cl_data.get("event", ""),
                     consequence=cl_data.get("consequence", ""),
                     thread_id="thread_main",
-                )
-                ws.causal_chain.append(cl)
+                ))
                 applied["causal"] += 1
 
             # 时间轴事件
@@ -2872,24 +3210,26 @@ async def extract_story_state_batch(book_id: str):
 
             main_chars = data.get("chapter_main_characters", [])
             for mc in main_chars:
-                mc_stripped = mc.strip()
+                mc_stripped = str(mc).strip()
                 if not mc_stripped:
                     continue
-                if mc_stripped not in char_to_thread:
-                    new_thread_id = f"thread_{mc_stripped}"
+                cid = _cid(mc_stripped)
+                if cid not in char_to_thread and mc_stripped not in char_to_thread:
+                    new_thread_id = f"thread_{cid or mc_stripped}"
                     existing_ids = {t.id for t in ws.threads}
                     if new_thread_id in existing_ids:
-                        new_thread_id = f"thread_{mc_stripped}_{_uuid.uuid4().hex[:4]}"
+                        new_thread_id = f"thread_{cid or mc_stripped}_{_uuid.uuid4().hex[:4]}"
                     from core.types.narrative import NarrativeThread, ThreadType
                     new_thread = NarrativeThread(
                         id=new_thread_id, name=f"{mc_stripped}线",
                         type=ThreadType.SUBPLOT if len(ws.threads) > 0 else ThreadType.MAIN,
-                        pov_character_id=mc_stripped,
+                        pov_character_id=cid,
                         start_chapter=ch, last_active_chapter=ch,
                         goal="", growth_arc="", weight=0.5, status="active",
                         character_ids=[], end_hook="",
                     )
                     ws.threads.append(new_thread)
+                    char_to_thread[cid] = new_thread_id
                     char_to_thread[mc_stripped] = new_thread_id
 
             def _resolve_tid(character_name: str) -> str:
@@ -2897,6 +3237,9 @@ async def extract_story_state_batch(book_id: str):
                     return "thread_main"
                 if character_name in char_to_thread:
                     return char_to_thread[character_name]
+                cid = _cid(character_name)
+                if cid in char_to_thread:
+                    return char_to_thread[cid]
                 for cn, tid in char_to_thread.items():
                     if cn in character_name or character_name in cn:
                         return tid
@@ -2905,6 +3248,8 @@ async def extract_story_state_batch(book_id: str):
             time_order = float(ch)
             counter = 0
             for ke in data.get("key_events", []):
+                if not isinstance(ke, dict) or not ke.get("action"):
+                    continue
                 counter += 1
                 ke_char = ke.get("character") or ke.get("character_id", "")
                 event = {
@@ -2912,7 +3257,7 @@ async def extract_story_state_batch(book_id: str):
                     "chapter": ch,
                     "physical_time": "",
                     "time_order": time_order + counter * 0.1,
-                    "character_id": ke_char,
+                    "character_id": _cid(ke_char),
                     "location_id": "",
                     "action": ke.get("action", ""),
                     "type": ke.get("type", "other"),
@@ -2921,20 +3266,34 @@ async def extract_story_state_batch(book_id: str):
                 ws.timeline.append(event)
                 applied["timeline"] += 1
 
-            # 回收伏笔
+            # 回收伏笔：按描述匹配现有 open 伏笔
+            resolved_ids: list[str] = []
             for h_desc in data.get("hooks_resolved", []):
                 h_desc_stripped = str(h_desc).strip()
                 if not h_desc_stripped:
                     continue
                 for hook in ws.pending_hooks:
-                    if hook.status == HookStatus.OPEN and h_desc_stripped in hook.description:
+                    if hook.status == HookStatus.OPEN and (
+                        h_desc_stripped in hook.description or hook.description in h_desc_stripped
+                    ):
                         hook.status = HookStatus.RESOLVED
                         hook.resolved_in_chapter = ch
+                        resolved_ids.append(hook.id)
+                        break
 
             if ws.current_chapter < ch:
                 ws.current_chapter = ch
 
             sm.write_world_state(ws)
+
+            # 伏笔 / 因果链通过 StateManager 写入，保证 JSON 与 md 同步
+            for hook in hooks_to_open:
+                sm.open_hook(hook)
+            for cl in causal_to_add:
+                sm.add_causal_link(cl)
+            if resolved_ids:
+                # 回收状态已在 ws 中改好，这里重建 md 使其与 JSON 一致
+                sm._rebuild_pending_hooks_md(ws)
             sm.update_current_state_md()
             if ws.threads:
                 sm.update_thread_status_md()
@@ -2944,8 +3303,9 @@ async def extract_story_state_batch(book_id: str):
             extracted_count += 1
 
         except Exception as e:
+            # 单章失败不中断整批，继续处理后续章节
             results.append({"chapter": ch, "ok": False, "error": str(e)})
-            break  # 失败就中断
+            continue
 
     skipped = len(all_chapters) - len(to_extract)
     failed = sum(1 for r in results if not r["ok"])
@@ -2966,6 +3326,8 @@ async def ai_generate_outline(book_id: str, req: AiGenerateOutlineReq):
     _load_env()
     from core.setup import SetupLoader
     from core.llm import LLMMessage
+
+    sm = _sm(book_id)
 
     try:
         state = SetupLoader.restore(PROJECT_ROOT, book_id)
@@ -3077,11 +3439,36 @@ dramatic_function 只能使用以下值：
         elif "```" in content:
             content = content.split("```", 1)[1].split("```", 1)[0]
         data = json.loads(content)
-        return {"ok": True, "data": data}
     except json.JSONDecodeError as e:
         return {"ok": False, "error": f"AI 输出解析失败：{e}", "raw": content[-500:] if content else ""}
     except Exception as e:
         raise HTTPException(500, f"AI 生成失败：{e}")
+
+    # 规范化 + Schema 校验，避免把坏结构直接返回给前端保存
+    from core.narrative import StoryOutlineSchema
+    data = _normalize_outline(data, sm)
+    if not data.get("sequences"):
+        return {"ok": False, "error": "AI 未生成任何序列，请重试", "raw": content[-500:]}
+    try:
+        outline = StoryOutlineSchema.model_validate(data)
+    except Exception as e:
+        return {"ok": False, "error": f"AI 输出结构不合法：{e}", "raw": content[-500:]}
+
+    # estimated_scenes 总和修正到目标章数（等比缩放，最后一序列吸收余数）
+    target = state.config.target_chapters
+    total = sum(s.estimated_scenes for s in outline.sequences)
+    if total != target and total > 0:
+        ratio = target / total
+        remaining = target
+        for i, seq in enumerate(outline.sequences):
+            if i == len(outline.sequences) - 1:
+                seq.estimated_scenes = max(1, remaining)
+            else:
+                scaled = max(1, round(seq.estimated_scenes * ratio))
+                seq.estimated_scenes = scaled
+                remaining -= scaled
+
+    return {"ok": True, "data": outline.model_dump()}
 
 
 @app.post("/api/books/{book_id}/ai-continue/outline")
@@ -3166,25 +3553,46 @@ async def ai_continue_outline(book_id: str, req: AiContinueOutlineReq):
         if not isinstance(new_seqs, list):
             new_seqs = [new_seqs]
     except json.JSONDecodeError as e:
-        return {"ok": False, "error": f"AI 输出解析失败：{e}", "raw": content[-500:] if content else ""}
+        # 先尝试修复截断/裸属性名再放弃
+        from core.llm import _repair_truncated_json
+        try:
+            new_seqs = json.loads(_repair_truncated_json(content.strip()))
+            if not isinstance(new_seqs, list):
+                new_seqs = [new_seqs]
+        except json.JSONDecodeError:
+            return {"ok": False, "error": f"AI 输出解析失败：{e}", "raw": content[-500:] if content else ""}
     except Exception as e:
         raise HTTPException(500, f"AI 续写失败：{e}")
 
     # 修正编号并追加
+    new_seqs = [s for s in new_seqs if isinstance(s, dict)]
+    if not new_seqs:
+        return {"ok": False, "error": "AI 未返回任何新序列，请重试"}
+
+    # 用统一规范化逻辑补齐字段，避免缺 narrative_goal 等必填项
+    tmp_outline = _normalize_outline(
+        {"sequences": new_seqs, "title": existing.get("title", ""),
+         "logline": existing.get("logline", ""), "genre": existing.get("genre", "玄幻")},
+        sm,
+    )
+    new_seqs = tmp_outline.get("sequences", [])
+
     for i, seq in enumerate(new_seqs):
         seq["id"] = f"seq_{len(existing_seqs)+i+1:03d}"
         seq["number"] = len(existing_seqs) + i + 1
-        # 修正 dramatic_function
-        df = seq.get("dramatic_function", "transition")
-        seq["dramatic_function"] = _DF_MAP.get(df, df)
 
     existing["sequences"].extend(new_seqs)
-    # 回写
-    outline_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 回写（同时同步当前卷大纲，切卷后不丢失）
+    outline_content = json.dumps(existing, ensure_ascii=False, indent=2)
+    outline_path.write_text(outline_content, encoding="utf-8")
+    arc_id = _current_arc_id(sm)
+    if arc_id:
+        _arc_outline_path(sm, arc_id).write_text(outline_content, encoding="utf-8")
 
-    # 更新 target_chapters
+    # 更新 target_chapters：取「原目标」与「各序列章数之和」的较大值，不允许续写把目标改小
     new_total = sum(s.get("estimated_scenes", 0) for s in existing["sequences"])
-    cfg_data["target_chapters"] = new_total
+    original_target = cfg_data.get("target_chapters", 0) or 0
+    cfg_data["target_chapters"] = max(original_target, new_total)
     sm._write_json("config.json", cfg_data)
 
     return {"ok": True, "data": existing, "added": len(new_seqs), "new_total_chapters": new_total}
@@ -3229,7 +3637,22 @@ async def ai_generate_chapter_outlines(book_id: str):
 
     try:
         all_outlines = []
-        ch_start = 1
+        # 全局章号偏移：接续前面各卷已生成的章纲，避免每卷都从第 1 章重号
+        novel_plan = _ensure_novel_plan(sm)
+        current_arc_id = novel_plan.get("current_arc_id", "arc_001")
+        max_prev_chapter = 0
+        for f in sm.state_dir.glob("arc_*_chapter_outlines.json"):
+            arc_id = f.name[:-len("_chapter_outlines.json")]
+            if not arc_id or arc_id == current_arc_id:
+                continue
+            try:
+                prev = json.loads(_read_json_file(f))
+                for co in prev:
+                    max_prev_chapter = max(max_prev_chapter, int(co.get("chapter_number", 0)))
+            except Exception:
+                continue
+        ch_start = max_prev_chapter + 1
+
         for seq in outline.sequences:
             cos = await asyncio.to_thread(
                 engine.generate_chapter_outlines,
@@ -3241,13 +3664,198 @@ async def ai_generate_chapter_outlines(book_id: str):
             all_outlines.extend(cos)
             ch_start += len(cos)
 
-        result_data = [o.model_dump() for o in all_outlines]
-        path = sm.state_dir / "chapter_outlines.json"
-        path.write_text(json.dumps(result_data, ensure_ascii=False, indent=2), encoding="utf-8")
-        return {"ok": True, "count": len(all_outlines), "outlines": result_data}
+        # 输出校验：章号必须连续、summary/beats 不能为空
+        result_data = []
+        expected = max_prev_chapter + 1
+        for o in all_outlines:
+            d = o.model_dump()
+            if not d.get("summary") or not d.get("beats"):
+                raise HTTPException(500, f"第 {d.get('chapter_number')} 章章纲为空（缺少 summary 或 beats）")
+            d["chapter_number"] = expected
+            for bi, beat in enumerate(d.get("beats", [])):
+                beat["id"] = f"beat_{expected}_{bi+1}"
+            result_data.append(d)
+            expected += 1
+
+        # 同时写入当前章纲文件与该卷专属文件
+        content = json.dumps(result_data, ensure_ascii=False, indent=2)
+        (sm.state_dir / "chapter_outlines.json").write_text(content, encoding="utf-8")
+        _arc_chapter_outlines_path(sm, current_arc_id).write_text(content, encoding="utf-8")
+        return {"ok": True, "count": len(result_data), "outlines": result_data,
+                "arc_id": current_arc_id, "chapter_start": max_prev_chapter + 1}
+    except HTTPException:
+        raise
     except Exception as e:
-        import traceback; traceback.print_exc()
+        import traceback
+        traceback.print_exc()
         raise HTTPException(500, f"章纲生成失败：{e}")
+
+
+class GenerateChapterOutlineReq(BaseModel):
+    """逐章生成章纲：chapter_number 为空=追加下一章；有值=只重生成该章"""
+    chapter_number: int | None = None
+    extra_points: str = ""
+
+
+@app.post("/api/books/{book_id}/ai-generate/chapter-outline")
+async def ai_generate_single_chapter_outline(book_id: str, req: GenerateChapterOutlineReq):
+    """逐章生成章纲，不覆盖其它已有章纲"""
+    _load_env()
+    from core.setup import SetupLoader
+    from core.narrative import NarrativeEngine, StoryOutlineSchema
+
+    sm = _sm(book_id)
+    outline_path = sm.state_dir / "outline.json"
+    if not outline_path.exists():
+        raise HTTPException(404, "请先生成大纲")
+
+    try:
+        state = SetupLoader.restore(PROJECT_ROOT, book_id)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+
+    # 读取大纲 JSON 并规范化后再验证
+    outline_raw = _normalize_outline(json.loads(outline_path.read_text(encoding="utf-8")), sm)
+    outline = StoryOutlineSchema.model_validate_json(json.dumps(outline_raw, ensure_ascii=False))
+
+    protagonist = state.characters.get(state.config.protagonist_id)
+    if protagonist is None:
+        for ch in state.characters.values():
+            if getattr(ch, "role", None) == "protagonist":
+                protagonist = ch
+                break
+    if protagonist is None:
+        protagonist = next(iter(state.characters.values()), None)
+    if protagonist is None:
+        raise HTTPException(400, "未找到主角角色信息，请检查角色配置")
+
+    try:
+        llm = _create_llm(temperature=0.7)
+    except Exception as e:
+        raise HTTPException(400, f"LLM 创建失败：{e}")
+    engine = NarrativeEngine(llm)
+
+    # 当前卷章纲
+    co_path = sm.state_dir / "chapter_outlines.json"
+    cos: list = []
+    if co_path.exists():
+        try:
+            data = json.loads(co_path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                cos = [c for c in data if isinstance(c, dict)]
+        except Exception:
+            cos = []
+
+    nums = [int(c.get("chapter_number", 0) or 0) for c in cos if c.get("chapter_number")]
+
+    # 当前卷的全局章号起点（多卷时章号有偏移）
+    novel_plan = _ensure_novel_plan(sm)
+    current_arc_id = novel_plan.get("current_arc_id", "arc_001")
+    max_other = 0
+    for f in sm.state_dir.glob("arc_*_chapter_outlines.json"):
+        aid = f.name[:-len("_chapter_outlines.json")]
+        if not aid or aid == current_arc_id:
+            continue
+        try:
+            prev = json.loads(_read_json_file(f))
+            for c in prev:
+                max_other = max(max_other, int(c.get("chapter_number", 0) or 0))
+        except Exception:
+            continue
+
+    regen = req.chapter_number is not None
+    arc_offset = (min(nums) - 1) if nums else max_other
+    if regen:
+        ch_num = int(req.chapter_number)
+        idx = next((i for i, c in enumerate(cos)
+                    if int(c.get("chapter_number", 0) or 0) == ch_num), -1)
+        if idx < 0:
+            raise HTTPException(404, f"第 {ch_num} 章不在章纲中")
+    else:
+        ch_num = (max(nums) + 1) if nums else (max_other + 1)
+        idx = -1
+
+    # 本章在卷内的相对章序，用于定位所属故事序列
+    local_ch = max(1, ch_num - arc_offset)
+    sequence = None
+    cum = 0
+    for seq in outline.sequences:
+        cum += max(1, int(seq.estimated_scenes or 1))
+        if local_ch <= cum:
+            sequence = seq
+            break
+    if sequence is None and outline.sequences:
+        sequence = outline.sequences[-1]
+
+    # 上下文：世界状态 + 前情摘要 + 上一章结尾 + 最近章纲
+    from core.types.state import TruthFileKey
+    world_ctx = sm.read_truth_bundle([TruthFileKey.CURRENT_STATE, TruthFileKey.CHARACTER_MATRIX])
+    summaries = sm.read_truth(TruthFileKey.CHAPTER_SUMMARIES)
+    prev_context = ""
+    if summaries.strip():
+        prev_context += "【前情摘要】\n" + summaries.strip()[-1500:] + "\n"
+    if ch_num > 1:
+        prev_text = _latest_chapter_text(sm, ch_num - 1)
+        if prev_text:
+            prev_context += "【上一章结尾】\n" + prev_text.strip()[-800:]
+    recent_lines = []
+    for c in sorted(cos, key=lambda x: int(x.get("chapter_number", 0) or 0))[-3:]:
+        recent_lines.append(
+            f"第{c.get('chapter_number')}章《{c.get('title', '')}》：{c.get('summary', '')}")
+    recent_outlines = "\n".join(recent_lines)
+
+    words = int(state.config.target_words_per_chapter or 4000)
+
+    try:
+        co = await asyncio.to_thread(
+            engine.generate_single_chapter_outline,
+            sequence, protagonist, world_ctx, ch_num, words,
+            prev_context, recent_outlines, req.extra_points or "",
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"章纲生成失败：{e}")
+
+    d = co.model_dump()
+    d["chapter_number"] = ch_num
+    if not d.get("target_words"):
+        d["target_words"] = words
+
+    # 输出校验：坏数据不落盘
+    if not str(d.get("summary", "")).strip():
+        raise HTTPException(500, "章纲生成失败：缺少 summary，请重试")
+    if not d.get("beats"):
+        raise HTTPException(500, "章纲生成失败：缺少 beats，请重试")
+
+    if regen:
+        cos[idx] = d
+    else:
+        cos.append(d)
+    cos.sort(key=lambda x: int(x.get("chapter_number", 0) or 0))
+
+    content = json.dumps(cos, ensure_ascii=False, indent=2)
+    co_path.write_text(content, encoding="utf-8")
+    # 同步当前卷专属章纲文件，切卷不丢失
+    _arc_chapter_outlines_path(sm, current_arc_id).write_text(content, encoding="utf-8")
+
+    # 目标章数至少覆盖到本章（不改小已有目标）
+    try:
+        cfg = sm.read_config()
+        if int(cfg.get("target_chapters", 0) or 0) < ch_num:
+            cfg["target_chapters"] = ch_num
+            sm._write_json("config.json", cfg)
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "chapter_number": ch_num,
+        "outline": d,
+        "outlines": cos,
+        "sequence_id": (sequence.id if sequence else ""),
+        "regenerated": regen,
+    }
 
 
 # ── 风格提示词管理 ────────────────────────────────────────────────────────────
@@ -3470,16 +4078,49 @@ async def three_layer_audit(book_id: str, req: ThreeLayerAuditReq):
     """三层审计：语言层 + 结构层 + 戏剧层"""
     _load_env()
     sm = _sm(book_id)
-    content = sm.read_final(req.chapter) or sm.read_draft(req.chapter)
+    content = _latest_chapter_text(sm, req.chapter)
     if not content:
         raise HTTPException(404, f"第 {req.chapter} 章不存在")
 
     from core.agents import AuditorAgent, ArchitectBlueprint, PreWriteChecklist, PostWriteSettlement
     from core.types.state import TruthFileKey
 
+    # 用真实细纲 + 章纲构造审计蓝图，否则审计员拿不到本章目标只能空评
+    cfg = sm.read_config()
+    target_words = int(cfg.get("target_words_per_chapter", 4000) or 4000)
+
+    co_info: dict = {}
+    co_path = sm.state_dir / "chapter_outlines.json"
+    if co_path.exists():
+        try:
+            for co in json.loads(co_path.read_text(encoding="utf-8")):
+                if co.get("chapter_number") == req.chapter:
+                    co_info = co
+                    break
+        except json.JSONDecodeError:
+            pass
+
+    detailed: dict = {}
+    detail_path = sm.state_dir / "detailed_outlines" / f"ch{req.chapter:04d}.json"
+    if detail_path.exists():
+        try:
+            detailed = json.loads(detail_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+
+    emotional = detailed.get("emotional_arc") or co_info.get("emotional_arc") or {}
+    if not isinstance(emotional, dict):
+        emotional = {}
+    raw_hooks_advance = detailed.get("hooks_to_advance") or co_info.get("hooks_to_advance") or []
+    raw_hooks_plant = detailed.get("hooks_to_plant") or co_info.get("hooks_to_plant") or []
+
     blueprint = ArchitectBlueprint(
-        core_conflict="", hooks_to_advance=[], hooks_to_plant=[],
-        emotional_journey={}, chapter_end_hook="", pace_notes="",
+        core_conflict=detailed.get("detailed_summary") or co_info.get("summary", ""),
+        hooks_to_advance=[str(h) for h in raw_hooks_advance if h],
+        hooks_to_plant=[str(h) for h in raw_hooks_plant if h],
+        emotional_journey=emotional,
+        chapter_end_hook=detailed.get("chapter_end_hook") or co_info.get("chapter_end_hook", ""),
+        pace_notes=co_info.get("writing_notes", ""),
         pre_write_checklist=PreWriteChecklist([], [], [], [], ""),
     )
 
@@ -3492,9 +4133,8 @@ async def three_layer_audit(book_id: str, req: ThreeLayerAuditReq):
         # ── 语言层（复用现有 Validator + 审计员的去AI味/连续性维度）──
         if mode in ("language", "full"):
             from core.validators import PostWriteValidator
-            cfg = sm.read_config()
             validator = PostWriteValidator(cfg.get("custom_forbidden_words", []))
-            v_result = validator.validate(content, target_words=5000)
+            v_result = validator.validate(content, target_words=target_words)
             lang_issues = []
             for v in v_result.issues:
                 lang_issues.append({
@@ -3568,9 +4208,26 @@ async def three_layer_audit(book_id: str, req: ThreeLayerAuditReq):
         raise HTTPException(500, f"审计失败：{e}")
 
 
+class ActionReviseReq(BaseModel):
+    book_id: str | None = None
+    chapter: int | None = None
+    mode: str = "spot-fix"
+
+
 @app.post("/api/action/revise")
-def action_revise(book_id: str, chapter: int, mode: str = "spot-fix"):
-    """手动修订指定章节"""
+def action_revise(
+    book_id: str | None = None,
+    chapter: int | None = None,
+    mode: str = "spot-fix",
+    body: ActionReviseReq | None = None,
+):
+    """手动修订指定章节（同时兼容 query 参数与 JSON body）"""
+    if body is not None:
+        book_id = body.book_id or book_id
+        chapter = body.chapter if body.chapter is not None else chapter
+        mode = body.mode or mode
+    if not book_id or chapter is None:
+        raise HTTPException(422, "缺少 book_id 或 chapter")
     _load_env()
     try:
         result = subprocess.run(
@@ -4090,10 +4747,44 @@ async def ai_generate_detailed_outline(book_id: str, req: DetailedOutlineReq):
         stripped = re.sub(r"\s*```\s*$", "", stripped, flags=re.MULTILINE).strip()
         result = json.loads(stripped)
     except json.JSONDecodeError as e:
-        raise HTTPException(500, f"细纲 JSON 解析失败：{e}\n原始输出：{raw[:500]}")
+        # 兼容模型输出裸属性名 / 截断 JSON 的情况
+        from core.llm import _repair_truncated_json
+        try:
+            result = json.loads(_repair_truncated_json(stripped))
+        except json.JSONDecodeError:
+            raise HTTPException(500, f"细纲 JSON 解析失败：{e}\n原始输出：{raw[:500]}")
     except Exception as e:
         import traceback; traceback.print_exc()
         raise HTTPException(500, f"细纲生成失败：{e}")
+
+    # ── 校验细纲结构：正文生成完全依赖细纲，残缺数据必须在保存前拦截 ──
+    if not isinstance(result, dict):
+        raise HTTPException(500, "细纲生成失败：模型未返回 JSON 对象")
+    scenes = result.get("scenes")
+    if not isinstance(scenes, list) or not scenes:
+        raise HTTPException(500, "细纲生成失败：缺少 scenes 场景列表，请重试")
+    cleaned_scenes = []
+    for i, sc in enumerate(scenes):
+        if not isinstance(sc, dict):
+            continue
+        sc.setdefault("scene_id", f"s{i + 1}")
+        sc.setdefault("scene_title", sc.get("goal") or f"场景{i + 1}")
+        if not isinstance(sc.get("characters"), list):
+            sc["characters"] = []
+        if not isinstance(sc.get("beats"), list):
+            sc["beats"] = []
+        try:
+            sc["word_budget"] = int(sc.get("word_budget", 500))
+        except (TypeError, ValueError):
+            sc["word_budget"] = 500
+        cleaned_scenes.append(sc)
+    if not cleaned_scenes:
+        raise HTTPException(500, "细纲生成失败：场景数据格式全部无效，请重试")
+    result["scenes"] = cleaned_scenes
+    # 章号以请求为准，避免模型返回错号导致正文生成取错章
+    result["chapter_number"] = req.chapter_number
+    if not str(result.get("detailed_summary", "")).strip():
+        result["detailed_summary"] = target_co.get("summary", "")
 
     # 保存细纲
     detail_path = sm.state_dir / "detailed_outlines" / f"ch{req.chapter_number:04d}.json"
@@ -4114,7 +4805,15 @@ def get_detailed_outline(book_id: str, chapter: int):
 
 @app.put("/api/books/{book_id}/detailed-outline/{chapter}")
 def save_detailed_outline(book_id: str, chapter: int, data: dict):
+    """手动保存细纲：同样校验结构，避免坏数据导致正文生成失败"""
     sm = _sm(book_id)
+    if not isinstance(data, dict):
+        raise HTTPException(400, "细纲必须是 JSON 对象")
+    scenes = data.get("scenes")
+    if not isinstance(scenes, list) or not any(isinstance(s, dict) for s in scenes):
+        raise HTTPException(400, "细纲至少需要一个有效场景（scenes）")
+    data["scenes"] = [s for s in scenes if isinstance(s, dict)]
+    data["chapter_number"] = chapter
     path = sm.state_dir / "detailed_outlines" / f"ch{chapter:04d}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -4283,9 +4982,12 @@ async def ai_generate_chapter_content(book_id: str, req: ChapterContentReq):
     # 保存草稿
     sm.save_draft(req.chapter_number, content)
 
-    # ── 写后状态更新（让下一章有记忆） ──────────────────────────
+    # ── 写后结算：章节摘要 + 完整状态提取（伏笔/关系/位置/情感/因果/时间轴） ──
+    warnings: list[str] = []
+    settlement = None
+
+    # 1. 生成章节摘要（供后续章节提示词衔接）
     try:
-        # 1. 生成章节摘要
         summary_prompt = f"""请为以下小说章节生成一份简明摘要（200-300字），包含：
 - 本章核心事件（1-2句）
 - 角色情感变化
@@ -4302,38 +5004,39 @@ async def ai_generate_chapter_content(book_id: str, req: ChapterContentReq):
 
         summary_md = f"\n## 第 {req.chapter_number} 章《{detailed.get('title', '')}》\n{summary_resp.strip()}\n---\n"
         sm.append_truth(TruthFileKey.CHAPTER_SUMMARIES, summary_md)
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        warnings.append(f"章节摘要生成失败：{e}")
 
-        # 2. 提取简单因果链
-        causal_prompt = f"""从以下章节正文中提取因果关系，每条格式为：
-因为 [原因]，发生了 [事件]，导致 [后果]
-只列出最重要的 2-5 条。
+    # 2. 结构化状态提取：与「提取故事数据」手动入口完全一致，保证写作后世界状态同步
+    try:
+        settlement = await extract_story_state(
+            book_id, ExtractStoryStateReq(chapter=req.chapter_number, thread_id="thread_main")
+        )
+        if not settlement.get("ok"):
+            warnings.append(f"状态结算失败：{settlement.get('error', '未知错误')}")
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        warnings.append(f"状态结算失败：{e}")
 
-正文：
-{content[:4000]}"""
-
-        causal_resp = await asyncio.to_thread(lambda: llm.complete([
-            LLMMessage("system", "你从小说正文中提取因果关系，每条一行。"),
-            LLMMessage("user", causal_prompt),
-        ]).content)
-
-        if causal_resp.strip():
-            causal_entry = f"\n### 第 {req.chapter_number} 章\n{causal_resp.strip()}\n"
-            sm.append_truth(TruthFileKey.CAUSAL_CHAIN, causal_entry)
-
-        # 3. 更新世界状态中的当前章节号
-        try:
-            ws = sm.read_world_state()
+    # 3. 兜底推进当前章节号（即使状态提取失败，也不阻塞后续章节）
+    try:
+        ws = sm.read_world_state()
+        if ws.current_chapter < req.chapter_number:
             ws.current_chapter = req.chapter_number
             sm.write_world_state(ws)
             sm.update_current_state_md()
-        except Exception:
-            pass  # 世界状态更新失败不阻塞
+    except Exception:
+        pass
 
-    except Exception as e:
-        import traceback; traceback.print_exc()
-        # 摘要/因果链生成失败不阻塞正文返回
-
-    return {"ok": True, "chapter_number": req.chapter_number, "content": content, "chars": len(content)}
+    return {
+        "ok": True,
+        "chapter_number": req.chapter_number,
+        "content": content,
+        "chars": len(content),
+        "settlement": settlement,
+        "warnings": warnings,
+    }
 
 
 @app.post("/api/action/write")
@@ -4383,9 +5086,9 @@ def action_export(req: ExportRequest):
         # 如果需要 txt 格式，将 md 转换为 txt
         if req.fmt == "txt" and result.returncode == 0:
             from core.state import StateManager
-            sm = StateManager(".", req.book_id)
+            sm = StateManager(str(PROJECT_ROOT), req.book_id)
             config = sm.read_config()
-            md_path = Path(f"{config['title']}.md")
+            md_path = PROJECT_ROOT / f"{config['title']}.md"
             if md_path.exists():
                 txt_path = md_path.with_suffix(".txt")
                 txt_path.write_text(md_path.read_text(encoding="utf-8"), encoding="utf-8")

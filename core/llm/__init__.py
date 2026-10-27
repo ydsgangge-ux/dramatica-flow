@@ -245,8 +245,53 @@ def parse_llm_json(
         )
 
 
+def _quote_bare_keys(text: str) -> str:
+    """
+    给裸露的属性名补上双引号：{name: "x", age: 1} -> {"name": "x", "age": 1}
+    只匹配紧跟在 { 或 , 之后的「标识符 + 冒号」，尽量不误伤字符串内容。
+    """
+    return re.sub(
+        r'([{,]\s*)([A-Za-z_][A-Za-z0-9_\-]*)(\s*:)',
+        lambda m: f'{m.group(1)}"{m.group(2)}"{m.group(3)}',
+        text,
+    )
+
+
+def _fix_unescaped_inner_quotes(text: str) -> str:
+    """
+    修复字符串值内部未转义的引号，例如：
+      "dramatic_question": "以"守"证道的心剑，能否胜过以"夺"证道？"
+    模型常把中文引号写成 ASCII 双引号，导致 JSON 断在字符串中间。
+    逐行处理：只有当「key: "value"」整行单独解析失败时才转义内部引号。
+    """
+    line_re = re.compile(r'^(\s*"[^"]+"\s*:\s*")(.*)("\s*,?\s*)$')
+    out = []
+    for line in text.split("\n"):
+        m = line_re.match(line)
+        if not m:
+            out.append(line)
+            continue
+        # 能独立解析成 {key: value} 说明这一行本身没问题，不动
+        try:
+            json.loads("{" + line.strip().rstrip(",") + "}")
+            out.append(line)
+            continue
+        except Exception:
+            pass
+        inner = m.group(2)
+        # 先把已转义的引号保护起来，避免二次转义
+        inner = inner.replace('\\"', "\x00")
+        inner = inner.replace('"', '\\"').replace("\x00", '\\"')
+        out.append(m.group(1) + inner + m.group(3))
+    return "\n".join(out)
+
+
 def _repair_truncated_json(text: str) -> str:
     """尝试修复被 max_tokens 截断的 JSON（补全未闭合的括号/大括号）"""
+    # 先补属性名的双引号（模型常输出 {name: "x"} 这类非法 JSON）
+    text = _quote_bare_keys(text)
+    # 再修复字符串值内部未转义的引号（中文引号被写成 ASCII 双引号）
+    text = _fix_unescaped_inner_quotes(text)
     # 去掉末尾可能残留的不完整内容：截断到最后一个完整对象（} 或 ]）
     # 先尝试直接补全
     depth = 0
@@ -382,6 +427,7 @@ def parse_llm_json_list(
         )
 
     results = []
+    failures: list[str] = []
     for i, item in enumerate(data_list):
         if patch_fn and isinstance(item, dict):
             item = patch_fn(item)
@@ -413,7 +459,18 @@ def parse_llm_json_list(
                     continue
                 except ValidationError:
                     pass
+            # 记录失败项，全部解析完后统一报错（不再静默丢弃，避免用占位章掩盖问题）
+            idx = item.get("chapter_number", i) if isinstance(item, dict) else i
+            failures.append(f"#{idx}: {e.errors()[0].get('msg', e)}")
             continue
+
+    if failures:
+        ctx = f" ({context})" if context else ""
+        raise LLMParseError(
+            f"JSON 列表有 {len(failures)}/{len(data_list)} 项校验失败{ctx}："
+            + "；".join(failures[:5]),
+            raw_output=raw,
+        )
     return results
 
 

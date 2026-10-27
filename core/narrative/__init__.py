@@ -327,26 +327,168 @@ class NarrativeEngine:
                 if len(outlines) > batch_count:
                     outlines = outlines[:batch_count]
                 elif len(outlines) < batch_count:
-                    for j in range(len(outlines), batch_count):
-                        outlines.append(ChapterOutlineSchema(
-                            chapter_number=actual_ch_start + j,
-                            title=f"第{actual_ch_start + j}章",
-                            summary=f"{sequence.summary}",
-                            sequence_id=sequence.id,
-                            beats=[BeatSchema(
-                                id=f"beat_{actual_ch_start + j}_1",
-                                description="情节推进",
-                                dramatic_function=DramaticFunction.TRANSITION,
-                            )],
-                            emotional_arc={"start": "平静", "end": "紧张"},
-                            mandatory_tasks=["推进情节"],
-                            target_words=words_per_chapter,
-                        ))
+                    # 不再用「情节推进」占位章补齐：占位章会污染细纲与正文。
+                    # 章数不足视为 LLM 输出不合格，交给外层 with_retry 重试。
+                    raise ValueError(
+                        f"章纲数量不足：需要 {batch_count} 个，实际 {len(outlines)} 个"
+                    )
                 return outlines
 
             batch_result = with_retry(_call)
             all_outlines.extend(batch_result)
         return all_outlines
+
+    # ── 2.5 单章章纲（逐章生成，不覆盖已有章纲） ───────────────────────────────
+
+    def generate_single_chapter_outline(
+        self,
+        sequence: SequenceSchema | None,
+        protagonist: Character,
+        world_context: str,
+        chapter_number: int,
+        words_per_chapter: int,
+        prev_context: str = "",
+        recent_outlines: str = "",
+        user_hint: str = "",
+    ) -> ChapterOutlineSchema:
+        """
+        只生成 1 个章纲。用于「生成下一章」和「重新生成本章」，
+        避免一次性重生成整卷导致手工修改丢失。
+        """
+        _DF_ALIASES = {
+            "twist": "turning", "turn": "turning", "turning_point": "turning",
+            "complication": "turning", "转折": "turning",
+            "hook": "inciting", "trigger": "inciting", "钩子": "inciting",
+            "conflict": "crisis", "crash": "crisis", "冲突": "crisis",
+            "battle": "climax", "showdown": "climax", "战斗": "climax",
+            "ending": "consequence", "result": "consequence", "后果": "consequence",
+            "info": "reveal", "revelation": "reveal", "揭示": "reveal",
+            "choice": "decision", "选择": "decision",
+            "build": "setup", "intro": "setup", "建立": "setup",
+            "bridge": "transition", "pause": "transition", "过渡": "transition",
+            "mid": "midpoint", "中点": "midpoint",
+        }
+        _VALID_DF = {"setup", "inciting", "turning", "midpoint", "crisis",
+                     "climax", "reveal", "decision", "consequence", "transition"}
+
+        seq_block = "（本章不属于任何已有序列，请承接前文自然推进主线）"
+        seq_id = ""
+        if sequence is not None:
+            seq_id = sequence.id
+            seq_block = f"""\
+- 序列摘要：{sequence.summary}
+- 叙事目标：{sequence.narrative_goal}
+- 戏剧功能：{sequence.dramatic_function.value}
+- 关键事件：{'、'.join(sequence.key_events)}
+- 该序列结尾钩子：{sequence.end_hook}"""
+
+        prev_block = ""
+        if prev_context.strip():
+            prev_block = f"\n## 前文衔接（必须承接）\n{prev_context.strip()[:2000]}\n"
+
+        recent_block = ""
+        if recent_outlines.strip():
+            recent_block = f"\n## 最近几章章纲（保持连贯，不要重复）\n{recent_outlines.strip()[:1500]}\n"
+
+        hint_block = ""
+        if user_hint.strip():
+            hint_block = f"\n## 用户追加的剧情点（必须体现）\n{user_hint.strip()}\n"
+
+        prompt = f"""\
+请为一部小说生成**第 {chapter_number} 章**的章节大纲（只生成这 1 章，不要多也不要少）。
+
+## 故事序列
+{seq_block}
+
+## 主角
+{protagonist.name}：
+- 外部目标：{protagonist.need.external}
+- 内在渴望：{protagonist.need.internal}
+- 性格锁定：{'、'.join(protagonist.behavior_lock)}
+
+## 当前世界状态
+{world_context[:1200] if world_context.strip() else '（尚未建立）'}
+{prev_block}{recent_block}{hint_block}
+## 严格要求
+- 只输出 1 个 JSON 对象，不要数组、不要任何说明
+- summary 为本章剧情摘要（50 字以内）
+- beats 为 2-3 个节拍，每个必须包含 id、description、dramatic_function
+- dramatic_function 只能是：setup/inciting/turning/midpoint/crisis/climax/reveal/decision/consequence/transition
+- 本章目标字数 {words_per_chapter} 字
+- mandatory_tasks 列出本章不完成就审计不通过的叙事任务（1-2 个）
+- emotional_arc 格式：{{"start": "开始情绪", "end": "结束情绪"}}
+- sequence_id 填 "{seq_id}"
+
+## JSON 输出格式
+{{
+  "chapter_number": {chapter_number},
+  "title": "第{chapter_number}章 标题",
+  "summary": "本章剧情摘要",
+  "sequence_id": "{seq_id}",
+  "beats": [
+    {{"id": "beat_{chapter_number}_1", "description": "节拍描述", "dramatic_function": "setup"}}
+  ],
+  "emotional_arc": {{"start": "平静", "end": "紧张"}},
+  "mandatory_tasks": ["必须完成的叙事任务"],
+  "target_words": {words_per_chapter},
+  "pov": "",
+  "writing_notes": ""
+}}
+
+只输出 JSON，不要任何说明。"""
+
+        def _patch(item: dict) -> dict:
+            if "chapter" in item and "chapter_number" not in item:
+                item["chapter_number"] = item.pop("chapter")
+            if not item.get("summary"):
+                item["summary"] = item.get("title", "章节摘要")
+            if not item.get("title"):
+                item["title"] = f"第{chapter_number}章"
+            if not item.get("sequence_id") and seq_id:
+                item["sequence_id"] = seq_id
+            for bi, beat in enumerate(item.get("beats", []) or []):
+                if not isinstance(beat, dict):
+                    continue
+                if not beat.get("id"):
+                    beat["id"] = f"beat_{chapter_number}_{bi+1}"
+                fn = str(beat.get("dramatic_function", "") or "").lower().strip()
+                if fn and fn not in _VALID_DF:
+                    beat["dramatic_function"] = _DF_ALIASES.get(fn, "transition")
+                elif not fn:
+                    beat["dramatic_function"] = "transition"
+            return item
+
+        def _call() -> ChapterOutlineSchema:
+            resp = self.llm.complete([
+                LLMMessage("system", "你是精通节拍表的故事编辑，只输出合法 JSON 对象。"),
+                LLMMessage("user", prompt),
+            ])
+            raw = resp.content.strip()
+            # 模型偶尔会输出数组，取第一个即可
+            if raw.lstrip().startswith("["):
+                items = parse_llm_json_list(
+                    raw, ChapterOutlineSchema, "generate_single_chapter_outline",
+                    patch_fn=_patch,
+                )
+                if not items:
+                    raise ValueError("单章章纲输出为空")
+                co = items[0]
+            else:
+                co = parse_llm_json(
+                    raw, ChapterOutlineSchema, "generate_single_chapter_outline",
+                    patch_fn=_patch,
+                )
+            if not co.beats:
+                raise ValueError("单章章纲缺少 beats，输出不合格")
+            co.chapter_number = chapter_number
+            if not co.target_words:
+                co.target_words = words_per_chapter
+            for bi, beat in enumerate(co.beats):
+                if not beat.id:
+                    beat.id = f"beat_{chapter_number}_{bi+1}"
+            return co
+
+        return with_retry(_call)
 
     # ── 3. 因果链提取 ──────────────────────────────────────────────────────────
 

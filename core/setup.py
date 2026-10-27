@@ -166,11 +166,24 @@ class SetupLoader:
             self.sm.write_config(config)
             print(f"  -> 自动设置主角：{config.protagonist_id}")
 
-        # 初始化角色位置
-        world_state = WorldState(book_id=config.id)
+        # 初始化角色位置：必须保留已有写作进度（章节号、关系、伏笔、因果链、时间轴等），
+        # 否则每次 setup load 都会把书打回第 0 章、清空全部状态。
         first_loc = next(iter(locations.keys()), "")
+        world_state_path = self.sm.state_dir / "world_state.json"
+        if world_state_path.exists():
+            try:
+                world_state = self.sm.read_world_state()
+                print(f"  - 保留已有世界状态（当前第 {world_state.current_chapter} 章）")
+            except Exception as e:  # 文件损坏时退回新状态，但给出提示
+                print(f"  ! world_state.json 读取失败（{e}），重建空状态")
+                world_state = WorldState(book_id=config.id)
+        else:
+            world_state = WorldState(book_id=config.id)
+
+        # 仅补充"从未记录过位置"的角色，已有位置不覆盖
         for char_id in characters:
-            world_state.character_positions[char_id] = first_loc
+            if char_id not in world_state.character_positions:
+                world_state.character_positions[char_id] = first_loc
         self.sm.write_world_state(world_state)
 
         # 生成 story_bible.md

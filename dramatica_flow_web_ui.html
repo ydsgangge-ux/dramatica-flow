@@ -2450,6 +2450,8 @@ function renderStep4Outline() {
 
 async function aiGenOutline() {
   if (!currentBook) return;
+  if (window._outlineBusy) return toast('正在生成大纲，请稍候', false);
+  window._outlineBusy = true;
   const btn = document.querySelector('#step4-content .btn-primary');
   if (btn) { btn.disabled = true; btn.textContent = '生成中...'; }
   toast('AI 正在生成大纲，请稍候...', 'loading');
@@ -2470,16 +2472,18 @@ async function aiGenOutline() {
     toast('大纲已生成并保存', true);
     loadStep4();
   } catch (e) { toast('生成失败: ' + e.message, false); }
-  finally { if (btn) { btn.disabled = false; btn.textContent = 'AI 生成故事大纲'; } }
+  finally { window._outlineBusy = false; if (btn) { btn.disabled = false; btn.textContent = 'AI 生成故事大纲'; } }
 }
 
 async function saveOutline() {
   if (!bookData?.outline) return;
-  await api(`/books/${currentBook.id}/outline`, {
-    method: 'PUT', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ outline: bookData.outline }),
-  });
-  toast('大纲已保存', true);
+  try {
+    await api(`/books/${currentBook.id}/outline`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ outline: bookData.outline }),
+    });
+    toast('大纲已保存', true);
+  } catch (e) { toast('大纲保存失败: ' + e.message, false); }
 }
 
 function editOutlineLogline() {
@@ -2612,7 +2616,8 @@ function renderStep4ChOutlines() {
     return `<div style="text-align:center;padding:32px">
       <p style="color:var(--text2);margin-bottom:16px">${hasOutline ? '故事大纲已就绪，可以生成章节大纲，也可以从外部导入。' : '请先生成故事大纲。'}</p>
       <div style="display:flex;gap:10px;justify-content:center">
-        <button class="btn btn-primary btn-lg" onclick="aiGenChapterOutlines()" ${!hasOutline?'disabled':''}>AI 生成章节大纲</button>
+        <button class="btn btn-primary btn-lg" onclick="aiGenNextChOutline()" ${!hasOutline?'disabled':''}>AI 生成第一章章纲</button>
+        <button class="btn btn-lg" onclick="aiGenChapterOutlines()" ${!hasOutline?'disabled':''}>一次生成整卷</button>
         <button class="btn btn-lg" onclick="showImportChOutlinesModal()">&#128229; 导入章纲</button>
       </div>
     </div>`;
@@ -2620,8 +2625,9 @@ function renderStep4ChOutlines() {
   if (typeof chOutlineEditingIdx === 'undefined') window.chOutlineEditingIdx = -1;
   return `
     <div class="toolbar">
-      <button class="btn btn-primary" onclick="aiGenChapterOutlines()">重新生成</button>
-      <button class="btn btn-warning" onclick="aiContinueChOutlines()">AI 续写章节</button>
+      <button class="btn btn-success" onclick="aiGenNextChOutline()">+ AI 生成下一章</button>
+      <button class="btn btn-warning" onclick="aiContinueChOutlines()">AI 批量续写章节</button>
+      <button class="btn" onclick="aiGenChapterOutlines()" title="按故事大纲重新生成整卷，会覆盖已有章纲">重新生成整卷</button>
       <button class="btn" onclick="showImportChOutlinesModal()">&#128229; 导入章纲</button>
       <button class="btn btn-success" onclick="unlockStep(5);goStep(5)">大纲确定，开始写作 &#8250;</button>
     </div>
@@ -2699,13 +2705,15 @@ function renderStep4ChOutlines() {
           </div>` : ''}
           <div class="co-actions">
             <button class="btn btn-primary btn-sm" onclick="saveChOutlineInline(${i})">&#128190; 保存修改</button>
+            <button class="btn btn-sm" onclick="aiRegenChOutline(${i})" title="只重生成这一章的章纲，其它章不受影响">&#10024; 重新生成本章</button>
             <button class="btn btn-sm" onclick="toggleChOutlineEdit(${i})">收起</button>
           </div>
         </div>
       </div>`;
     }).join('')}
     <div style="text-align:center;margin-top:12px">
-      <button class="btn btn-warning btn-sm" onclick="aiContinueChOutlines()">+ AI 续写新章节</button>
+      <button class="btn btn-success btn-sm" onclick="aiGenNextChOutline()">+ AI 生成下一章</button>
+      <button class="btn btn-warning btn-sm" onclick="aiContinueChOutlines()" style="margin-left:8px">+ AI 批量续写</button>
       <button class="btn btn-sm" onclick="addChOutlineManual()" style="margin-left:8px">+ 手动添加章节</button>
     </div>`;
 }
@@ -2767,6 +2775,8 @@ async function saveChOutlineInline(idx) {
 
 async function aiGenChapterOutlines() {
   if (!currentBook) return;
+  if (window._outlineBusy) return toast('正在生成大纲，请稍候', false);
+  window._outlineBusy = true;
   const btn = event?.target?.closest('button');
   if (btn) { btn.disabled = true; btn._origText = btn.textContent; btn.textContent = '生成中，请稍候...'; }
   toast('AI 正在生成章节大纲，请耐心等待...', 'loading');
@@ -2778,13 +2788,13 @@ async function aiGenChapterOutlines() {
     toast(`${res.count} 章大纲已生成`, true);
     loadStep4();
   } catch (e) { toast('生成失败: ' + e.message, false); }
-  finally { if (btn) { btn.disabled = false; btn.textContent = btn._origText || 'AI 生成章节大纲'; } }
+  finally { window._outlineBusy = false; if (btn) { btn.disabled = false; btn.textContent = btn._origText || 'AI 生成章节大纲'; } }
 }
 
 function addBeat(idx) {
   if (!chapterOutlinesCache?.[idx]) return;
   if (!chapterOutlinesCache[idx].beats) chapterOutlinesCache[idx].beats = [];
-  chapterOutlinesCache[idx].beats.push({ description: '', dramatic_function: '', detail: '' });
+  chapterOutlinesCache[idx].beats.push({ description: '', dramatic_function: 'transition', detail: '' });
   loadStep4();
 }
 
@@ -2798,11 +2808,7 @@ function deleteChOutline(idx) {
   if (!chapterOutlinesCache) return;
   if (!confirm('确定删除该章节大纲？')) return;
   chapterOutlinesCache.splice(idx, 1);
-  // 重新编号
-  chapterOutlinesCache.forEach((co, i) => {
-    co.chapter_number = i + 1;
-    co.chapter = i + 1;
-  });
+  // 不重新编号：章纲与细纲、正文都按章号关联，重排会让既有文件对不上
   bookData.chapterOutlines = chapterOutlinesCache;
   api(`/books/${currentBook.id}/chapter-outlines`, {
     method: 'PUT', headers: {'Content-Type': 'application/json'},
@@ -2812,7 +2818,11 @@ function deleteChOutline(idx) {
 
 function addChOutlineManual() {
   if (!chapterOutlinesCache) chapterOutlinesCache = [];
-  const n = chapterOutlinesCache.length + 1;
+  // 沿用全局章号：取最后一章章号 +1，而不是本地数组长度 +1
+  const lastNo = chapterOutlinesCache.length
+    ? (chapterOutlinesCache[chapterOutlinesCache.length - 1].chapter_number || chapterOutlinesCache.length)
+    : 0;
+  const n = lastNo + 1;
   const title = prompt('章节标题：', `第${n}章`);
   if (!title) return;
   const summary = prompt('章节摘要：', '');
@@ -2833,8 +2843,10 @@ function addChOutlineManual() {
 
 async function aiContinueChOutlines() {
   if (!currentBook) return;
+  if (window._outlineBusy) return toast('正在生成大纲，请稍候', false);
   const extra = prompt('要续写多少章？', '10');
   if (!extra) return;
+  window._outlineBusy = true;
   toast('AI 正在续写章节大纲，请耐心等待...', 'loading');
   try {
     const res = await api(`/books/${currentBook.id}/continue-writing`, {
@@ -2851,6 +2863,7 @@ async function aiContinueChOutlines() {
     toast(`已追加 ${res.added} 章大纲，共 ${res.new_total} 章 ${modeTip}`, true);
     loadStep4();
   } catch (e) { toast('续写失败: ' + e.message, false); }
+  finally { window._outlineBusy = false; }
 }
 
 function renderStep4Data() {
@@ -2881,6 +2894,8 @@ function loadStep5() {
   const totalWords = chapters.reduce((s, c) => s + (c.chars || 0), 0);
   const progress = book.target_chapters ? Math.round(((book.current_chapter||0) / book.target_chapters) * 100) : 0;
   const nextCh = (book.current_chapter || 0) + 1;
+  // 章纲数组下标 ≠ 全局章号（多卷时章号有偏移），按章号反查真实下标
+  const nextIdx = cos.findIndex((co, i) => (co.chapter_number || co.chapter || i + 1) === nextCh);
 
   document.getElementById('step5-panel').innerHTML = `
     <div style="max-width:1100px;margin:0 auto">
@@ -2927,7 +2942,7 @@ function loadStep5() {
                 `<div style="text-align:center;padding:20px;color:var(--text2)">
                   <p style="margin-bottom:8px">&#8592; 请从左侧选择一个章节</p>
                   <p style="font-size:12px">下一章：第 ${nextCh} 章</p>
-                  ${nextCh <= (cos.length || 99) ? `<button class="btn btn-primary" style="margin-top:12px" onclick="selectWritingChapter(${(book.current_chapter||0)})">&#9654; 快速选择下一章</button>` : ''}
+                  ${nextIdx >= 0 ? `<button class="btn btn-primary" style="margin-top:12px" onclick="selectWritingChapter(${nextIdx})">&#9654; 快速选择下一章</button>` : ''}
                 </div>`
                 : '<div class="empty">请先生成章节大纲</div>'}
             </div>
@@ -3115,6 +3130,8 @@ function renderDetailedOutline(d) {
 async function genDetailedOutline(chNum) {
   const area = document.getElementById('detail-outline-area');
   if (!area) return;
+  if (window._detailBusy) return toast('正在生成细纲，请稍候', false);
+  window._detailBusy = true;
   const extraPoints = document.getElementById('ed-extra-points')?.value || '';
   area.innerHTML = '<div class="loading" style="padding:10px">AI 正在生成细纲，请稍候...</div>';
   toast('正在生成细纲...', 'loading');
@@ -3129,6 +3146,7 @@ async function genDetailedOutline(chNum) {
     renderDetailedOutline(d);
     toast('细纲已生成', true);
   } catch (e) { toast('细纲生成失败: ' + e.message, false); area.innerHTML = ''; }
+  finally { window._detailBusy = false; }
 }
 
 function editDetailedOutline() {
@@ -3204,6 +3222,9 @@ async function saveDetailedOutline() {
 async function genChapterContent(chNum) {
   const area = document.getElementById('chapter-content-area');
   if (!area) return;
+  // 防重入：正文生成 + 写后状态结算耗时较长，避免重复点击并发请求
+  if (window._writingBusy) return toast('正在写作中，请等待当前章节完成', false);
+  window._writingBusy = true;
   area.innerHTML = '<div class="loading" style="padding:10px">AI 正在生成正文，请耐心等待（1-3 分钟）...</div>';
   toast('正在生成正文...', 'loading');
   try {
@@ -3214,6 +3235,9 @@ async function genChapterContent(chNum) {
     if (!res.ok) { toast('正文生成失败', false); area.innerHTML = ''; return; }
     const { content, chars } = res;
     window._lastWrittenChapter = chNum;
+    const warningHtml = (res.warnings && res.warnings.length)
+      ? `<div style="margin-top:8px;font-size:11px;color:var(--orange,#d29922);white-space:pre-wrap">${res.warnings.map(esc).join('<br>')}</div>`
+      : '';
     area.innerHTML = `
       <div class="card" style="padding:12px;background:var(--bg2);margin-top:8px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
@@ -3221,14 +3245,16 @@ async function genChapterContent(chNum) {
           <button class="btn btn-sm" onclick="viewChapter(${chNum})">查看全文</button>
         </div>
         <div style="font-size:11px;color:var(--text3);max-height:100px;overflow:hidden;white-space:pre-wrap;border-top:1px solid var(--border);padding-top:8px">${esc(content.substring(0, 300))}...</div>
+        ${warningHtml}
         <div style="display:flex;gap:8px;margin-top:10px">
           <button class="btn btn-sm btn-success" onclick="promoteAndAudit(${chNum})" style="flex:1">&#9989; 确认最终稿并进入审计</button>
           <button class="btn btn-sm" onclick="genChapterContent(${chNum})">重新生成</button>
         </div>
       </div>`;
-    toast(`第 ${chNum} 章草稿已生成（${chars}字）`, true);
+    toast(`第 ${chNum} 章草稿已生成（${chars}字），状态已同步`, true);
     await loadBookData();
   } catch (e) { toast('正文生成失败: ' + e.message, false); area.innerHTML = `<div style="color:var(--red);font-size:12px;padding:8px">${esc(e.message)}</div>`; }
+  finally { window._writingBusy = false; }
 }
 
 async function promoteAndAudit(chNum) {
@@ -3240,6 +3266,9 @@ async function promoteAndAudit(chNum) {
     // 自动跳转到审计步骤
     unlockStep(6);
     goStep(6);
+    // 审计默认选中刚定稿的章节（重新生成旧章节时也能对上）
+    const sel = document.getElementById('audit-chapter');
+    if (sel) { sel.value = String(chNum); loadAuditChapterText(); loadSavedAudit(); }
   } catch (e) { toast('升级失败: ' + e.message, false); }
 }
 
@@ -3305,8 +3334,10 @@ async function doWrite(count) {
 
 async function continueWriting() {
   if (!currentBook) return;
+  if (window._outlineBusy) return toast('正在生成大纲，请稍候', false);
   const extraCount = prompt('要续写多少章？', '10');
   if (!extraCount) return;
+  window._outlineBusy = true;
   toast('AI 正在生成续写章节大纲，请耐心等待...', 'loading');
   try {
     const res = await api(`/books/${currentBook.id}/continue-writing`, {
@@ -3323,6 +3354,7 @@ async function continueWriting() {
     toast(`已追加 ${res.added} 章大纲，共 ${res.new_total} 章 ${modeTip}`, true);
     loadStep5();
   } catch (e) { toast('续写失败: ' + e.message, false); }
+  finally { window._outlineBusy = false; }
 }
 
 function showImportNovelModal() {
@@ -3619,11 +3651,13 @@ async function saveEditedContent(kind) {
 }
 
 async function aiRewriteSegment() {
+  if (window._rewriteBusy) return toast('正在 AI 修改，请稍候', false);
   const body = document.getElementById('chapter-text-body');
   const selected = body ? body.value.substring(body.selectionStart, body.selectionEnd).trim() : '';
   if (!selected) return toast('请先在正文中选中需要修改的段落', false);
   const instruction = document.getElementById('edit-instruction')?.value?.trim();
   if (!instruction) return toast('请输入修改指令', false);
+  window._rewriteBusy = true;
   const ch = parseInt(document.getElementById('audit-chapter').value);
   const resultDiv = document.getElementById('rewrite-result');
   resultDiv.innerHTML = '<div class="loading">AI 正在修改...</div>';
@@ -3647,6 +3681,7 @@ async function aiRewriteSegment() {
       </div>`;
     window._rewriteData = { selected, rewritten, selStart };
   } catch (e) { resultDiv.innerHTML = `<div class="error">${e.message}</div>`; }
+  finally { window._rewriteBusy = false; }
 }
 
 function applyRewrite() {
@@ -3661,11 +3696,13 @@ function applyRewrite() {
 }
 
 async function rewriteFullChapter() {
+  if (window._rewriteBusy) return toast('正在 AI 修改，请稍候', false);
   const ch = parseInt(document.getElementById('audit-chapter')?.value);
   if (!ch) return toast('请选择章节', false);
   const instruction = document.getElementById('edit-instruction')?.value?.trim();
   if (!instruction) return toast('请输入改写指令', false);
   if (!confirm('将对整章正文进行改写，可能需要 1-2 分钟。继续？')) return;
+  window._rewriteBusy = true;
   const resultDiv = document.getElementById('rewrite-result');
   resultDiv.innerHTML = '<div class="loading">AI 正在改写全文...</div>';
   try {
@@ -3696,6 +3733,7 @@ async function rewriteFullChapter() {
       </div>`;
     window._fullRewriteData = rewritten;
   } catch (e) { resultDiv.innerHTML = `<div class="error">${e.message}</div>`; }
+  finally { window._rewriteBusy = false; }
 }
 
 function applyFullRewrite() {
@@ -3828,6 +3866,8 @@ async function reopenHook(hookId) {
 async function extractStoryState() {
   const ch = parseInt(document.getElementById('audit-chapter')?.value);
   if (!ch) return toast('请先选择章节', false);
+  if (window._extractBusy) return toast('正在提取故事数据，请稍候', false);
+  window._extractBusy = true;
   toast('正在从章节正文提取故事数据（约30秒）...', 'loading');
   try {
     const res = await api(`/books/${currentBook.id}/extract-story-state`, {
@@ -3848,33 +3888,39 @@ async function extractStoryState() {
     toast(res.summary, true);
     loadStoryData();
   } catch (e) { toast('提取失败: ' + e.message, false); }
+  finally { window._extractBusy = false; }
 }
 
 async function extractAllStoryState() {
   if (!currentBook) return toast('请先选择书籍', false);
+  if (window._extractBusy) return toast('正在提取故事数据，请稍候', false);
   const go = confirm('将自动提取所有未提取章节的故事数据（每章约30秒），已提取的章节会跳过。\n\n提取过程中请勿进行其他操作。\n\n是否开始？');
   if (!go) return;
+  window._extractBusy = true;
   toast('开始批量提取...', 'loading');
   const panel = document.getElementById('story-data-content');
   if (panel) panel.innerHTML = '<div class="loading" style="padding:12px">正在批量提取故事数据，请耐心等待...</div>';
   try {
     const res = await api(`/books/${currentBook.id}/extract-story-state/batch`, { method: 'POST' });
-    if (!res.ok && res.results) {
+    // 批量接口现在单章失败会继续跑完整批，返回 results + failed 计数
+    if (res.results && res.failed > 0) {
       const failCh = res.results.filter(r => !r.ok);
-      toast(`提取中断：第${failCh.map(f=>f.chapter).join('、')}章失败`, false);
+      toast(`${res.message || '批量提取完成'}（失败：第${failCh.map(f => f.chapter).join('、')}章）`, false);
       if (panel) {
         panel.innerHTML = '<div style="padding:12px">' +
-          `<div style="margin-bottom:8px;color:var(--red);font-weight:600">提取中断</div>` +
+          `<div style="margin-bottom:8px;color:var(--red);font-weight:600">部分章节提取失败</div>` +
           res.results.map(r => `<div style="font-size:12px;margin:2px 0">${r.ok ? '✓' : '✗'} 第${r.chapter}章：${r.ok ? r.summary : r.error}</div>`).join('') +
           '</div>';
       }
+      loadStoryData();
     } else if (res.ok) {
       toast(res.message || '批量提取完成', true);
       loadStoryData();
     } else {
-      toast(res.detail || '提取失败', false);
+      toast(res.detail || res.error || '提取失败', false);
     }
   } catch (e) { toast('请求失败: ' + e.message, false); }
+  finally { window._extractBusy = false; }
 }
 
 function renderLocalEmotions(emotions, charMap) {
@@ -3931,6 +3977,9 @@ async function runThreeLayerAudit() {
   const ch = parseInt(document.getElementById('audit-chapter').value);
   const mode = document.getElementById('audit-mode').value;
   if (!ch) return toast('请选择章节', false);
+  // 防重入：审计走 LLM，重复点击会撞并发限制
+  if (window._auditBusy) return toast('正在审计，请稍候', false);
+  window._auditBusy = true;
 
   const panel = document.getElementById('audit-result-panel');
   panel.innerHTML = '<div class="loading" style="padding:16px">审计中，请等待（约 30 秒）...</div>';
@@ -3943,6 +3992,7 @@ async function runThreeLayerAudit() {
     if (!res.ok) { panel.innerHTML = `<div class="error">${res.detail||'审计失败'}</div>`; return; }
     renderAuditResult(res);
   } catch (e) { panel.innerHTML = `<div class="error">${e.message}</div>`; }
+  finally { window._auditBusy = false; }
 }
 
 function renderAuditResult(res) {
@@ -3999,6 +4049,8 @@ function renderAuditResult(res) {
 async function applyIssueFix(idx) {
   const iss = window._auditIssues?.[idx];
   if (!iss) return;
+  if (window._rewriteBusy) return toast('正在 AI 修复，请稍候', false);
+  window._rewriteBusy = true;
   toast('正在 AI 修复...', 'loading');
   const ch = parseInt(document.getElementById('audit-chapter').value);
   const instruction = `${iss.dimension}：${iss.description}。${iss.suggestion ? '建议：' + iss.suggestion : ''}`;
@@ -4037,11 +4089,14 @@ async function applyIssueFix(idx) {
       }
     }
   } catch (e) { toast('修复失败: ' + e.message, false); }
+  finally { window._rewriteBusy = false; }
 }
 
 async function doRevise() {
   const ch = parseInt(document.getElementById('audit-chapter')?.value);
   if (!ch) return toast('请选择章节', false);
+  if (window._reviseBusy) return toast('正在修订，请稍候', false);
+  window._reviseBusy = true;
   toast('正在自动修订...', 'loading');
   try {
     const res = await api(`/action/revise`, {
@@ -4052,6 +4107,7 @@ async function doRevise() {
     if (!res.ok && res.stderr) toast(res.stderr, false);
     await loadBookData();
   } catch (e) { toast('修订失败: ' + e.message, false); }
+  finally { window._reviseBusy = false; }
 }
 
 // ── 风格提示词管理 ──────────────────────────────────────────────────────────
