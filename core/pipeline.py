@@ -126,9 +126,9 @@ class WritingPipeline:
         causal_chain = self.sm.read_truth(TruthFileKey.CAUSAL_CHAIN)
         emotional_arcs = self.sm.read_truth(TruthFileKey.EMOTIONAL_ARCS)
 
-        # 前情摘要：取最近 3 章
+        # 前情摘要：取本章之前最近 3 章
         full_summaries = self.sm.read_truth(TruthFileKey.CHAPTER_SUMMARIES)
-        prior_summaries = _extract_recent_summaries(full_summaries, n=3)
+        prior_summaries = _extract_recent_summaries(full_summaries, n=3, before_chapter=ch)
 
         # ── 多线程上下文解析 ──────────────────────────────────────────────────
         ws = self.sm.read_world_state()
@@ -302,16 +302,17 @@ class WritingPipeline:
                 settlement=writer_output.settlement,
             )
             summary_md = self.summary_agent.format_for_truth_file(summary)
-            self.sm.append_truth(TruthFileKey.CHAPTER_SUMMARIES, summary_md)
+            # 按章覆盖：重复生成同一章时不会留下多份互相矛盾的摘要
+            self.sm.upsert_chapter_summary(ch, summary_md)
         except Exception as e:
             # 摘要生成失败不阻塞
             fallback = (
-                f"\n## 第 {ch} 章《{title}》\n"
+                f"## 第 {ch} 章《{title}》\n"
                 f"{chapter_outline.summary}\n"
                 f"- 审计：{'通过' if audit_report.passed else '未通过'}"
-                f"，修订 {revision_rounds} 轮\n---\n"
+                f"，修订 {revision_rounds} 轮"
             )
-            self.sm.append_truth(TruthFileKey.CHAPTER_SUMMARIES, fallback)
+            self.sm.upsert_chapter_summary(ch, fallback)
             log(f"摘要生成失败（{e}），使用 fallback")
 
         # ── 8. 应用结算表到世界状态 ───────────────────────────────────────────
@@ -635,14 +636,20 @@ def _format_beats(chapter_outline: ChapterOutlineSchema) -> str:
     return "\n".join(lines) if lines else "（无节拍信息，根据章节摘要自由发挥）"
 
 
-def _extract_recent_summaries(full_summaries: str, n: int = 3) -> str:
-    """从 chapter_summaries.md 中提取最近 n 章的摘要"""
+def _extract_recent_summaries(full_summaries: str, n: int = 3, before_chapter: int | None = None) -> str:
+    """从 chapter_summaries.md 中提取最近 n 章摘要。
+
+    写入格式是「## 第 N 章」（带空格），旧正则不兼容空格会退化为全量摘要；
+    同时支持只看 before_chapter 之前的章节（避免把本章摘要当前情）。
+    """
     if not full_summaries.strip():
         return ""
-    # 按 "## 第X章" 分割
-    import re
-    sections = re.split(r'\n(?=## 第\d+章)', full_summaries)
-    recent = [s for s in sections if s.strip().startswith("## 第")]
-    if not recent:
+    from .state import split_chapter_summaries
+
+    _, sections = split_chapter_summaries(full_summaries)
+    if not sections:
         return ""
-    return "\n".join(recent[-n:])
+    nums = sorted(k for k in sections if before_chapter is None or k < before_chapter)
+    if not nums:
+        return ""
+    return "\n\n".join(sections[k] for k in nums[-n:])

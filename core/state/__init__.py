@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 import tempfile
 import threading
 from datetime import datetime, timezone
@@ -106,6 +107,36 @@ def _key(k: TruthFileKey | str) -> TruthFileKey:
     return TruthFileKey(k)
 
 
+_SUMMARY_HEADER_RE = re.compile(r"^##\s*第\s*(\d+)\s*章")
+
+
+def split_chapter_summaries(text: str) -> tuple[str, dict[int, str]]:
+    """把 chapter_summaries.md 拆为（非章节前言, {章号: 章节块}）。
+
+    兼容历史上「## 第 N 章」带空格/不带空格两种写法，也兼容同章重复写入
+    （同章号块会合并，交由调用方决定覆盖）。
+    """
+    if not text.strip():
+        return "", {}
+    lines = text.splitlines()
+    heads: list[tuple[int, int]] = []
+    for i, line in enumerate(lines):
+        m = _SUMMARY_HEADER_RE.match(line)
+        if m:
+            heads.append((i, int(m.group(1))))
+    if not heads:
+        return text.strip(), {}
+    preamble = "\n".join(lines[:heads[0][0]]).strip()
+    sections: dict[int, str] = {}
+    for idx, (start, num) in enumerate(heads):
+        end = heads[idx + 1][0] if idx + 1 < len(heads) else len(lines)
+        block = "\n".join(lines[start:end]).strip()
+        if num in sections:
+            block = sections[num] + "\n" + block
+        sections[num] = block
+    return preamble, sections
+
+
 class StateManager:
     """
     目录结构：
@@ -176,6 +207,18 @@ class StateManager:
         with _STATE_LOCK:
             existing = self.read_truth(key)
             self.write_truth(key, existing + content)
+
+    def upsert_chapter_summary(self, chapter: int, block: str) -> None:
+        """写入/覆盖指定章节摘要；同章重复生成只保留最新一份，避免污染后续章节上下文"""
+        with _STATE_LOCK:
+            preamble, sections = split_chapter_summaries(
+                self.read_truth(TruthFileKey.CHAPTER_SUMMARIES)
+            )
+            sections[chapter] = block.strip()
+            body = "\n\n".join(sections[n] for n in sorted(sections))
+            head = preamble.strip()
+            merged = (head + "\n\n" if head else "") + body + "\n"
+            self.write_truth(TruthFileKey.CHAPTER_SUMMARIES, merged)
 
     def read_truth_bundle(self, keys: list[TruthFileKey | str]) -> str:
         """读取多个真相文件拼接，供 Agent 上下文使用"""
@@ -545,6 +588,15 @@ class StateManager:
         每章结束后调用，确保下一章的 Agent 看到准确的世界状态。
         """
         ws = self.read_world_state()
+        char_names, loc_names = self._name_maps()
+
+        def cname(cid: str) -> str:
+            name = char_names.get(cid)
+            return f"{name}（{cid}）" if name else cid
+
+        def lname(lid: str) -> str:
+            name = loc_names.get(lid)
+            return f"{name}（{lid}）" if name else lid
 
         lines = [f"# 当前世界状态（更新至第 {ws.current_chapter} 章）\n\n"]
 
@@ -552,7 +604,7 @@ class StateManager:
         lines.append("## 角色位置\n")
         if ws.character_positions:
             for char_id, loc_id in ws.character_positions.items():
-                lines.append(f"- {char_id}：{loc_id}\n")
+                lines.append(f"- {cname(char_id)}：{lname(loc_id)}\n")
         else:
             lines.append("（无记录）\n")
 
@@ -566,7 +618,7 @@ class StateManager:
         if latest_emotions:
             for char_id, snap in latest_emotions.items():
                 lines.append(
-                    f"- {char_id}：{snap.emotion}（强度 {snap.intensity}/10）"
+                    f"- {cname(char_id)}：{snap.emotion}（强度 {snap.intensity}/10）"
                     f"  — 触发：{snap.trigger}（Ch.{snap.chapter}）\n"
                 )
         else:
@@ -577,7 +629,7 @@ class StateManager:
         if ws.relationships:
             for rel in ws.relationships:
                 lines.append(
-                    f"- {rel.character_a} ↔ {rel.character_b}："
+                    f"- {cname(rel.character_a)} ↔ {cname(rel.character_b)}："
                     f"{rel.type.value}，强度 {rel.strength:+d}\n"
                 )
         else:
@@ -599,6 +651,75 @@ class StateManager:
                 lines.append(f"- Ch.{cl.chapter}：{cl.event}（因：{cl.cause}）\n")
 
         self.write_truth(TruthFileKey.CURRENT_STATE, "".join(lines))
+
+    def _name_maps(self) -> tuple[dict[str, str], dict[str, str]]:
+        """从 setup_state.json 读取 {ID: 名称} 映射（角色 / 地点），用于真相文件可读化"""
+        chars: dict[str, str] = {}
+        locs: dict[str, str] = {}
+        path = self.state_dir / "setup_state.json"
+        if not path.exists():
+            return chars, locs
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return chars, locs
+        chars_data = data.get("characters") or {}
+        if isinstance(chars_data, dict):
+            for cid, c in chars_data.items():
+                if isinstance(c, dict) and c.get("name"):
+                    chars[cid] = c["name"]
+        locs_data = data.get("locations") or {}
+        if isinstance(locs_data, dict):
+            for lid, loc in locs_data.items():
+                if isinstance(loc, dict) and loc.get("name"):
+                    locs[lid] = loc["name"]
+        return chars, locs
+
+    def sync_chapter_truth_md(self, chapter: int) -> None:
+        """以 world_state 为准重建本章在 emotional_arcs.md / character_matrix.md 的条目。
+
+        手动链路（提取数据 / 重新生成）不会走 pipeline 的 append 逻辑，若不在这里同步，
+        这两份被注入提示词的真相文件会一直是空模板。按章覆盖，保证重复提取幂等。
+        """
+        with _STATE_LOCK:
+            state = self.read_world_state()
+
+            def is_this_chapter(line: str) -> bool:
+                m = re.match(r"^\s*-\s*Ch\.(\d+)\s*\[", line)
+                return bool(m and int(m.group(1)) == chapter)
+
+            # 情感弧线
+            arcs = [l for l in self.read_truth(TruthFileKey.EMOTIONAL_ARCS).splitlines()
+                    if not is_this_chapter(l)]
+            new_arcs = [
+                f"- Ch.{chapter} [{s.character_id}] {s.emotion}（{s.intensity}/10）：{s.trigger}"
+                for s in state.emotional_snapshots if s.chapter == chapter
+            ]
+            self.write_truth(
+                TruthFileKey.EMOTIONAL_ARCS,
+                "\n".join([l for l in arcs if l.strip()] + new_arcs).rstrip() + "\n",
+            )
+
+            # 信息边界（角色矩阵）
+            matrix = [l for l in self.read_truth(TruthFileKey.CHARACTER_MATRIX).splitlines()
+                      if not is_this_chapter(l)]
+            new_infos = [
+                f"- Ch.{chapter} [{k.character_id}] 得知：{k.info_key} — {k.content}"
+                for k in state.known_info if k.learned_in_chapter == chapter
+            ]
+            if new_infos:
+                idx = next((i for i, l in enumerate(matrix) if l.startswith("## 信息边界")), None)
+                if idx is None:
+                    matrix.extend(["", "## 信息边界（谁知道了什么）", *new_infos])
+                else:
+                    insert_at = idx + 1
+                    while insert_at < len(matrix) and not matrix[insert_at].strip():
+                        insert_at += 1
+                    matrix[insert_at:insert_at] = new_infos
+            self.write_truth(
+                TruthFileKey.CHARACTER_MATRIX,
+                "\n".join(matrix).rstrip() + "\n",
+            )
 
     # ── 章节正文存储 ─────────────────────────────────────────────────────────────
 

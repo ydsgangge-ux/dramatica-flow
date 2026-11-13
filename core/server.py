@@ -208,6 +208,110 @@ def _latest_chapter_text(sm, chapter: int) -> str:
     return ""
 
 
+def _recent_summary_text(sm, before_chapter: int, n: int = 3) -> str:
+    """取第 before_chapter 章之前最近 n 章的摘要。
+
+    不能简单按全文截断：写入格式是「## 第 N 章」（带空格），旧正则匹配不到就会退化为全量摘要。
+    同时显式排除本章自身，避免重生成时把自己刚写的摘要当成前情。
+    """
+    from core.state import split_chapter_summaries
+    from core.types.state import TruthFileKey
+
+    _, sections = split_chapter_summaries(sm.read_truth(TruthFileKey.CHAPTER_SUMMARIES))
+    nums = sorted(k for k in sections if k < before_chapter)
+    if not nums:
+        return ""
+    return "\n\n".join(sections[k] for k in nums[-n:])
+
+
+def _chapter_title(sm, chapter: int) -> str:
+    """从章纲取章节标题（取不到则回退为「第N章」）"""
+    co_path = sm.state_dir / "chapter_outlines.json"
+    if co_path.exists():
+        try:
+            for co in json.loads(_read_json_file(co_path)):
+                if int(co.get("chapter_number", 0) or 0) == chapter:
+                    return str(co.get("title") or f"第{chapter}章")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    return f"第{chapter}章"
+
+
+def _write_chapter_summary(sm, chapter: int, title: str, summary: str) -> None:
+    """按章覆盖写入摘要（重复生成不会累积互相矛盾的旧摘要）"""
+    block = f"## 第 {chapter} 章《{title}》\n{summary.strip()}"
+    sm.upsert_chapter_summary(chapter, block)
+
+
+def _build_settlement(sm, chapter: int):
+    """从已提取的世界状态重建「写后结算表」，供审计员与正文交叉验证"""
+    from core.agents import PostWriteSettlement
+
+    ws = sm.read_world_state()
+
+    def te_field(event, key, default=""):
+        return event.get(key, default) if isinstance(event, dict) else getattr(event, key, default)
+
+    return PostWriteSettlement(
+        resource_changes=[],
+        new_hooks=[h.description for h in ws.pending_hooks if h.planted_in_chapter == chapter],
+        resolved_hooks=[
+            h.description for h in ws.pending_hooks
+            if getattr(h, "resolved_in_chapter", None) == chapter
+        ],
+        relationship_changes=[
+            f"{r.character_a}-{r.character_b}：{d.delta:+d}，{d.reason}"
+            for r in ws.relationships for d in r.history if d.chapter == chapter
+        ],
+        info_revealed=[
+            {"character_id": k.character_id, "info_key": k.info_key, "content": k.content}
+            for k in ws.known_info if k.learned_in_chapter == chapter
+        ],
+        character_position_changes=[
+            {
+                "character_id": te_field(e, "character_id"),
+                "location_id": te_field(e, "location_id"),
+                "action": te_field(e, "action"),
+            }
+            for e in ws.timeline
+            if te_field(e, "chapter", None) == chapter and te_field(e, "type", "") == "position"
+        ],
+        emotional_changes=[
+            {
+                "character_id": s.character_id,
+                "emotion": s.emotion,
+                "intensity": str(s.intensity),
+                "trigger": s.trigger,
+            }
+            for s in ws.emotional_snapshots if s.chapter == chapter
+        ],
+    )
+
+
+async def _regenerate_chapter_summary(llm, sm, chapter: int, content: str, title: str = "") -> str:
+    """用最新正文重新生成章节摘要并按章覆盖写入（供生成正文 / 手动编辑复用）"""
+    from core.llm import LLMMessage
+
+    title = (title or "").strip() or _chapter_title(sm, chapter)
+    prompt = f"""请为以下小说章节生成一份简明摘要（200-300字），包含：
+- 本章核心事件（1-2句）
+- 角色情感变化
+- 重要伏笔推进或埋设
+- 章末状态（为下一章铺垫）
+
+章节正文：
+{content[:4000]}"""
+
+    resp = await asyncio.to_thread(lambda: llm.complete([
+        LLMMessage("system", "你是小说编辑助手，生成简洁客观的章节摘要。"),
+        LLMMessage("user", prompt),
+    ]).content)
+    summary_text = (resp or "").strip()
+    if summary_text:
+        _write_chapter_summary(sm, chapter, title, summary_text)
+    return summary_text
+
+
 def _load_env():
     """加载 .env 到 os.environ"""
     from dotenv import load_dotenv
@@ -2687,20 +2791,30 @@ async def extract_story_state(book_id: str, req: ExtractStoryStateReq):
     # 应用到 world_state
     import uuid
     ws = sm.read_world_state()
-    applied = {"emotions": 0, "positions": 0, "relationships": 0, "hooks": 0, "timeline": 0, "info": 0, "causal": 0, "hooks_resolved": 0}
+    applied = {"emotions": 0, "positions": 0, "relationships": 0, "hooks": 0, "timeline": 0, "info": 0, "causal": 0,
+               "hooks_resolved": 0, "hooks_reopened": 0, "info_cleared": 0}
 
     # ── 同章重复提取的幂等处理：先移除本章旧数据，再重新写入 ──
     # 正文生成后已自动结算一次，用户再点「提取数据」不应产生重复记录
     ws.emotional_snapshots = [s for s in ws.emotional_snapshots if s.chapter != req.chapter]
     ws.timeline = [e for e in ws.timeline if getattr(e, "chapter", None) != req.chapter]
     ws.causal_chain = [c for c in ws.causal_chain if c.chapter != req.chapter]
+    # 信息：清除本章旧记录，否则改写后不再成立的信息会残留
+    before_info = len(ws.known_info)
+    ws.known_info = [k for k in ws.known_info if k.learned_in_chapter != req.chapter]
+    applied["info_cleared"] = before_info - len(ws.known_info)
     # 关系：回滚本章增量，避免重复提取导致关系强度翻倍
     for rel in ws.relationships:
         removed = [d for d in rel.history if d.chapter == req.chapter]
         if removed:
             rel.history = [d for d in rel.history if d.chapter != req.chapter]
             rel.strength = max(-100, min(100, rel.strength - sum(d.delta for d in removed)))
-    # 伏笔：移除本章植入且仍开放的；已回收的保留，避免破坏后续章的回收记录
+    # 伏笔：先回滚本章「已回收」的记录（改写后可能不再回收），再移除本章植入且仍开放的
+    for h in ws.pending_hooks:
+        if h.status == HookStatus.RESOLVED and getattr(h, "resolved_in_chapter", None) == req.chapter:
+            h.status = HookStatus.OPEN
+            h.resolved_in_chapter = None
+            applied["hooks_reopened"] += 1
     ws.pending_hooks = [
         h for h in ws.pending_hooks
         if not (h.planted_in_chapter == req.chapter and h.status == HookStatus.OPEN)
@@ -2908,6 +3022,8 @@ async def extract_story_state(book_id: str, req: ExtractStoryStateReq):
 
     # 更新真相文件
     sm.update_current_state_md()
+    # 情感弧线 / 信息边界：手动链路不会走 pipeline 的 append，这里按章重建，避免恒为空模板
+    sm.sync_chapter_truth_md(req.chapter)
     if ws.threads:
         sm.update_thread_status_md()
 
@@ -3295,6 +3411,7 @@ async def extract_story_state_batch(book_id: str):
                 # 回收状态已在 ws 中改好，这里重建 md 使其与 JSON 一致
                 sm._rebuild_pending_hooks_md(ws)
             sm.update_current_state_md()
+            sm.sync_chapter_truth_md(ch)
             if ws.threads:
                 sm.update_thread_status_md()
 
@@ -3352,6 +3469,7 @@ async def ai_generate_outline(book_id: str, req: AiGenerateOutlineReq):
     # 如果指定了 arc_id，只筛选该篇分配的事件
     filtered_events = state.seed_events[:]
     arc_title = state.config.title
+    arc_planned: int | None = None
     if req.arc_id:
         sm_local = _sm(book_id)
         np_path = _novel_plan_path(sm_local)
@@ -3364,9 +3482,14 @@ async def ai_generate_outline(book_id: str, req: AiGenerateOutlineReq):
                         if assigned_ids:
                             filtered_events = [e for e in state.seed_events if e.id in assigned_ids]
                         arc_title = a.get("title", arc_title)
+                        planned = a.get("planned_chapters")
+                        arc_planned = int(planned) if planned else None
                         break
             except Exception:
                 pass
+
+    # 卷规划章数优先于全书章数，否则多卷规划永远不会生效
+    target_chapters = arc_planned or state.config.target_chapters
 
     event_summary = "\n".join(
         f"- {e.name}（第{e.suggested_act}幕，{e.suggested_function.value if e.suggested_function else '未知'}）：{e.description}"
@@ -3380,7 +3503,7 @@ async def ai_generate_outline(book_id: str, req: AiGenerateOutlineReq):
 - 书名：{state.config.title}
 - 篇章：{arc_title}
 - 题材：{state.config.genre}
-- 总章数：{state.config.target_chapters}
+- 总章数：{target_chapters}{'（本卷规划章数）' if arc_planned else ''}
 - 用户想法：{req.idea or '（按种子事件自然发展）'}
 
 ## 角色
@@ -3423,7 +3546,7 @@ dramatic_function 只能使用以下值：
 要求：
 1. 自动按 25%/50%/25% 分配三幕章数
 2. 每幕 2-3 个序列，总计 6-10 个序列
-3. estimated_scenes 的总和必须精确等于 {state.config.target_chapters}
+3. estimated_scenes 的总和必须精确等于 {target_chapters}
 4. 必须覆盖：setup、inciting、turning、midpoint、crisis、climax、consequence
 5. 每个序列必须有唯一的 id（格式 seq_001, seq_002 ...）
 6. 每个序列的 estimated_scenes 至少为 1，不能为 0"""
@@ -3455,7 +3578,7 @@ dramatic_function 只能使用以下值：
         return {"ok": False, "error": f"AI 输出结构不合法：{e}", "raw": content[-500:]}
 
     # estimated_scenes 总和修正到目标章数（等比缩放，最后一序列吸收余数）
-    target = state.config.target_chapters
+    target = target_chapters
     total = sum(s.estimated_scenes for s in outline.sequences)
     if total != target and total > 0:
         ratio = target / total
@@ -3651,13 +3774,25 @@ async def ai_generate_chapter_outlines(book_id: str):
                     max_prev_chapter = max(max_prev_chapter, int(co.get("chapter_number", 0)))
             except Exception:
                 continue
-        ch_start = max_prev_chapter + 1
+        # 前情上下文：多卷重生成时，后续卷的章纲要看到前文摘要与上一章结尾。
+        # 放在最前面，避免被下游 prompt 的截断长度切掉。
+        context_end = max_prev_chapter
+        ch_start = context_end + 1
+        world_context = ""
+        if context_end > 0:
+            recent = _recent_summary_text(sm, context_end + 1, 3)
+            prev_text = _latest_chapter_text(sm, context_end)[-800:]
+            if recent:
+                world_context += "## 前情摘要（最近 3 章）\n" + recent + "\n\n"
+            if prev_text.strip():
+                world_context += "## 上一章结尾（必须承接）\n" + prev_text + "\n\n"
+        world_context += "## 世界观设定\n" + sm.read_truth("story_bible")
 
         for seq in outline.sequences:
             cos = await asyncio.to_thread(
                 engine.generate_chapter_outlines,
                 seq, protagonist,
-                sm.read_truth("story_bible"),
+                world_context,
                 ch_start,
                 state.config.target_words_per_chapter,
             )
@@ -3666,7 +3801,7 @@ async def ai_generate_chapter_outlines(book_id: str):
 
         # 输出校验：章号必须连续、summary/beats 不能为空
         result_data = []
-        expected = max_prev_chapter + 1
+        expected = context_end + 1
         for o in all_outlines:
             d = o.model_dump()
             if not d.get("summary") or not d.get("beats"):
@@ -3790,10 +3925,10 @@ async def ai_generate_single_chapter_outline(book_id: str, req: GenerateChapterO
     # 上下文：世界状态 + 前情摘要 + 上一章结尾 + 最近章纲
     from core.types.state import TruthFileKey
     world_ctx = sm.read_truth_bundle([TruthFileKey.CURRENT_STATE, TruthFileKey.CHARACTER_MATRIX])
-    summaries = sm.read_truth(TruthFileKey.CHAPTER_SUMMARIES)
+    recent_summaries = _recent_summary_text(sm, ch_num, 3)
     prev_context = ""
-    if summaries.strip():
-        prev_context += "【前情摘要】\n" + summaries.strip()[-1500:] + "\n"
+    if recent_summaries.strip():
+        prev_context += "【前情摘要】\n" + recent_summaries.strip() + "\n"
     if ch_num > 1:
         prev_text = _latest_chapter_text(sm, ch_num - 1)
         if prev_text:
@@ -4082,7 +4217,7 @@ async def three_layer_audit(book_id: str, req: ThreeLayerAuditReq):
     if not content:
         raise HTTPException(404, f"第 {req.chapter} 章不存在")
 
-    from core.agents import AuditorAgent, ArchitectBlueprint, PreWriteChecklist, PostWriteSettlement
+    from core.agents import AuditorAgent, ArchitectBlueprint, PreWriteChecklist
     from core.types.state import TruthFileKey
 
     # 用真实细纲 + 章纲构造审计蓝图，否则审计员拿不到本章目标只能空评
@@ -4152,31 +4287,51 @@ async def three_layer_audit(book_id: str, req: ThreeLayerAuditReq):
             truth_ctx = sm.read_truth_bundle([
                 TruthFileKey.CURRENT_STATE, TruthFileKey.PENDING_HOOKS,
                 TruthFileKey.CHARACTER_MATRIX, TruthFileKey.CAUSAL_CHAIN,
+                TruthFileKey.EMOTIONAL_ARCS,
             ])
             auditor = AuditorAgent(llm_audit)
             report = await asyncio.to_thread(
                 auditor.audit_chapter,
                 content, req.chapter, blueprint, truth_ctx,
-                PostWriteSettlement([], [], [], [], []),
+                _build_settlement(sm, req.chapter),
             )
-            # 分类到结构层和戏剧层
-            structure_dims = {"大纲偏离", "节奏", "结尾钩子"}
-            drama_dims = {"OOC（角色行为是否符合性格锁定，性格锁定的事绝对不能做）",
-                          "情感弧线", "冲突质量", "信息边界", "因果一致性", "伏笔管理"}
 
-            struct_issues = [i for i in report.issues if i.dimension in structure_dims]
-            drama_issues = [i for i in report.issues if i.dimension in drama_dims]
+            # 维度归类：按「维度名前缀」匹配，LLM 改写括号说明也不会被丢弃；
+            # 未识别维度一律归入戏剧层，避免连续性/去AI味/跨线程问题被静默过滤。
+            language_dims = {"去AI味"}
+            structure_dims = {"大纲偏离", "节奏", "结尾钩子", "连续性", "跨线程一致性"}
 
+            def _dim_label(dim: str) -> str:
+                return str(dim).split("（")[0].split("(")[0].strip()
+
+            lang_extra, struct_issues, drama_issues = [], [], []
+            for issue in report.issues:
+                label = _dim_label(issue.dimension)
+                if label in structure_dims:
+                    struct_issues.append(issue)
+                elif label in language_dims:
+                    lang_extra.append(issue)
+                else:
+                    drama_issues.append(issue)
+
+            def _merge_layer(name: str, issues: list) -> None:
+                if not issues:
+                    return
+                layer = results.setdefault(name, {"issues": [], "passed": True})
+                layer["issues"].extend(_dc_to_dict(i) for i in issues)
+                layer["passed"] = not any(
+                    i.get("severity") == "critical" for i in layer["issues"]
+                )
+
+            _merge_layer("language", lang_extra)
+            _merge_layer("structure", struct_issues)
+            _merge_layer("drama", drama_issues)
+
+            # 保持请求的层始终存在（无问题时也要返回「通过」而不是缺字段）
             if mode in ("structure", "full"):
-                results["structure"] = {
-                    "issues": [_dc_to_dict(i) for i in struct_issues],
-                    "passed": not any(i.severity == "critical" for i in struct_issues),
-                }
+                results.setdefault("structure", {"issues": [], "passed": True})
             if mode in ("drama", "full"):
-                results["drama"] = {
-                    "issues": [_dc_to_dict(i) for i in drama_issues],
-                    "passed": not any(i.severity == "critical" for i in drama_issues),
-                }
+                results.setdefault("drama", {"issues": [], "passed": True})
 
         overall_passed = all(r.get("passed", True) for r in results.values())
         total_critical = sum(len([i for i in r["issues"] if i.get("severity") == "critical"]) for r in results.values())
@@ -4270,16 +4425,77 @@ def list_audit_results(book_id: str):
 
 
 @app.put("/api/books/{book_id}/chapters/{chapter}/content")
-def update_chapter_content(book_id: str, chapter: int, req: dict):
-    """直接更新章节正文内容"""
+async def update_chapter_content(book_id: str, chapter: int, req: dict):
+    """直接更新章节正文内容，并同步章节摘要 / 世界状态。
+
+    只写文件会让 chapter_summaries.md 与 world_state.json 停留在旧内容，
+    下一章就会基于过期剧情生成，因此默认保存后重算摘要并重提取状态。
+    refresh: all（默认）| summary（仅摘要）| none（只写文件）
+    """
+    _load_env()
     sm = _sm(book_id)
-    content = req.get("content", "")
+    content = str(req.get("content", ""))
     kind = req.get("kind", "draft")
     if kind == "final":
         sm.save_final(chapter, content)
     else:
         sm.save_draft(chapter, content)
-    return {"ok": True, "chars": len(content)}
+
+    refresh = str(req.get("refresh", "all")).lower()
+    if refresh not in ("none", "summary", "all"):
+        refresh = "all"
+
+    warnings: list[str] = []
+    summary_updated = False
+    state_updated = False
+
+    if refresh == "none":
+        pass
+    elif not content.strip():
+        warnings.append("正文为空，已跳过摘要/状态刷新")
+    else:
+        llm = None
+        try:
+            llm = _create_llm(temperature=0.2)
+        except Exception as e:
+            warnings.append(f"正文已保存，但 LLM 不可用，摘要/状态未刷新：{e}")
+
+        if llm is not None:
+            if refresh in ("summary", "all"):
+                try:
+                    await _regenerate_chapter_summary(llm, sm, chapter, content)
+                    summary_updated = True
+                except Exception as e:
+                    warnings.append(f"章节摘要刷新失败：{e}")
+            if refresh == "all":
+                try:
+                    result = await extract_story_state(
+                        book_id, ExtractStoryStateReq(chapter=chapter)
+                    )
+                    state_updated = bool(result.get("ok"))
+                    if not state_updated:
+                        warnings.append(f"状态刷新失败：{result.get('error', '未知错误')}")
+                except Exception as e:
+                    warnings.append(f"状态刷新失败：{e}")
+
+    # 编辑到更靠后的章节时同步推进进度
+    try:
+        ws = sm.read_world_state()
+        if ws.current_chapter < chapter:
+            ws.current_chapter = chapter
+            sm.write_world_state(ws)
+            sm.update_current_state_md()
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "chars": len(content),
+        "refresh": refresh,
+        "summary_updated": summary_updated,
+        "state_updated": state_updated,
+        "warnings": warnings,
+    }
 
 
 class SegmentRewriteReq(BaseModel):
@@ -4649,11 +4865,21 @@ async def ai_generate_detailed_outline(book_id: str, req: DetailedOutlineReq):
     # 因果链（最近 30 条）
     causal_chain = sm.read_truth(TruthFileKey.CAUSAL_CHAIN)
 
-    # 前情摘要（最近 3 章）
-    full_summaries = sm.read_truth(TruthFileKey.CHAPTER_SUMMARIES)
-    import re as _re
-    prior_sections = _re.split(r'\n(?=## 第\d+章)', full_summaries)
-    recent_summaries = "\n".join(prior_sections[-3:]) if len(prior_sections) > 3 else full_summaries
+    # 前情摘要（最近 3 章，且只取本章之前的章节）
+    recent_summaries = _recent_summary_text(sm, req.chapter_number, 3)
+
+    # 角色名 ↔ ID 速查：current_state.md 里是裸 ID，没有对照表时细纲只能凭空猜
+    char_quick_ref = ""
+    try:
+        char_rows = []
+        for cid, c in (sm.read_characters() or {}).items():
+            if isinstance(c, dict) and c.get("name"):
+                goal = str(c.get("need", {}).get("external", "") if isinstance(c.get("need"), dict) else c.get("need", ""))
+                char_rows.append(f"- {c['name']}（{cid}）{('：' + goal[:40]) if goal else ''}")
+        if char_rows:
+            char_quick_ref = "## 角色名与 ID 对照\n" + "\n".join(char_rows) + "\n"
+    except Exception:
+        char_quick_ref = ""
 
     # 前后章纲（让细纲知道前一章写了什么、下一章要写什么）
     prev_co = next((c for c in all_cos if c.get("chapter_number") == req.chapter_number - 1), None)
@@ -4693,6 +4919,7 @@ async def ai_generate_detailed_outline(book_id: str, req: DetailedOutlineReq):
 ## 当前世界状态（角色位置、情感、关系）
 {world_ctx if world_ctx.strip() else '（尚未建立）'}
 
+{char_quick_ref}
 ## 未闭合伏笔
 {pending_hooks if pending_hooks.strip() else '（暂无）'}
 
@@ -4705,11 +4932,17 @@ async def ai_generate_detailed_outline(book_id: str, req: DetailedOutlineReq):
 ## 严格要求
 - 如果用户追加了剧情点，必须将所有剧情点融入场景设计中，不能遗漏任何一个
 - 用户追加的剧情点优先级最高，需要围绕它们展开场景
+- 所有场景 word_budget 之和必须约等于目标字数 {target_co.get('target_words', 4000)}
+- pov / writing_notes / emotional_arc 必须原样继承章纲要求，不得改写或省略
 请输出一个 JSON 对象，包含以下字段：
 {{
   "chapter_number": {req.chapter_number},
   "title": "章节标题",
   "detailed_summary": "200-300字的详细剧情梗概（起承转合完整）",
+  "pov": "本章叙事视角（继承章纲）",
+  "writing_notes": "本章写作基调（继承章纲）",
+  "mandatory_tasks": ["本章必须完成的叙事任务（继承章纲）"],
+  "emotional_arc": {{"start": "开始情绪", "end": "结束情绪"}},
   "scenes": [
     {{
       "scene_id": "s1",
@@ -4785,6 +5018,28 @@ async def ai_generate_detailed_outline(book_id: str, req: DetailedOutlineReq):
     result["chapter_number"] = req.chapter_number
     if not str(result.get("detailed_summary", "")).strip():
         result["detailed_summary"] = target_co.get("summary", "")
+
+    # 章纲约束必须在细纲里落地，否则「细纲→正文」这一段会丢字段
+    if not str(result.get("pov", "")).strip() and target_co.get("pov"):
+        result["pov"] = target_co.get("pov")
+    if not str(result.get("writing_notes", "")).strip() and target_co.get("writing_notes"):
+        result["writing_notes"] = target_co.get("writing_notes")
+    if not result.get("mandatory_tasks") and target_co.get("mandatory_tasks"):
+        result["mandatory_tasks"] = target_co.get("mandatory_tasks")
+    if not result.get("emotional_arc") and target_co.get("emotional_arc"):
+        result["emotional_arc"] = target_co.get("emotional_arc")
+
+    # 场景字数预算校验：偏差过大时按目标字数等比校正，避免预算互相冲突
+    try:
+        target_words = int(target_co.get("target_words") or 0)
+    except (TypeError, ValueError):
+        target_words = 0
+    budget_sum = sum(sc.get("word_budget", 0) for sc in cleaned_scenes)
+    if target_words >= 500 and budget_sum > 0 and abs(budget_sum - target_words) > target_words * 0.25:
+        ratio = target_words / budget_sum
+        for sc in cleaned_scenes:
+            sc["word_budget"] = max(100, int(round(sc.get("word_budget", 500) * ratio)))
+        result["word_budget_normalized"] = True
 
     # 保存细纲
     detail_path = sm.state_dir / "detailed_outlines" / f"ch{req.chapter_number:04d}.json"
@@ -4867,19 +5122,20 @@ async def ai_generate_chapter_content(book_id: str, req: ChapterContentReq):
     # 情感弧线
     emotional_arcs = sm.read_truth(TruthFileKey.EMOTIONAL_ARCS)
 
-    # 前情摘要（最近 3 章，而非盲目截断）
-    full_summaries = sm.read_truth(TruthFileKey.CHAPTER_SUMMARIES)
-    import re as _re
-    prior_sections = _re.split(r'\n(?=## 第\d+章)', full_summaries)
-    recent_summaries = "\n".join(prior_sections[-3:]) if len(prior_sections) > 3 else full_summaries
+    # 前情摘要（最近 3 章，且只取本章之前的章节）
+    recent_summaries = _recent_summary_text(sm, req.chapter_number, 3)
 
-    # 前一章内容（最后 800 字，用于衔接）
-    prev_content = ""
-    prev_final = sm.read_final(req.chapter_number - 1) or sm.read_draft(req.chapter_number - 1)
-    if prev_final:
-        prev_content = prev_final[-800:]
+    # 前一章内容（最后 800 字，用于衔接；按 mtime 取最新稿，重写后不会衔接旧定稿）
+    prev_content = _latest_chapter_text(sm, req.chapter_number - 1)[-800:]
 
     protagonist = state.characters.get(state.config.protagonist_id)
+    if protagonist is None:
+        protagonist = next(
+            (c for c in state.characters.values() if getattr(c, "role", None) == "protagonist"),
+            None,
+        )
+    if protagonist is None:
+        protagonist = next(iter(state.characters.values()), None)
     pname = protagonist.name if protagonist else "主角"
     p_need = protagonist.need.external if protagonist else "未知"
     p_internal = protagonist.need.internal if protagonist else "未知"
@@ -4896,9 +5152,40 @@ async def ai_generate_chapter_content(book_id: str, req: ChapterContentReq):
     hooks_plant = json.dumps(detailed.get("hooks_to_plant", []), ensure_ascii=False)
     hooks_advance = json.dumps(detailed.get("hooks_to_advance", []), ensure_ascii=False)
     end_hook = detailed.get("chapter_end_hook", "")
-    target_words = target_co.get("target_words", 4000)
+    try:
+        target_words = int(target_co.get("target_words") or 4000)
+    except (TypeError, ValueError):
+        target_words = 4000
     if target_words < 500:
         target_words = 4000
+
+    # 章纲里未被细纲继承的关键约束（不能在「细纲→正文」之间断链）
+    mandatory_tasks = target_co.get("mandatory_tasks") or []
+    emotional_arc = detailed.get("emotional_arc") or target_co.get("emotional_arc") or {}
+    pov = str(detailed.get("pov") or target_co.get("pov") or "").strip()
+    writing_notes = str(detailed.get("writing_notes") or target_co.get("writing_notes") or "").strip()
+
+    if isinstance(emotional_arc, dict):
+        emotional_arc = " → ".join(
+            str(emotional_arc.get(k, "")).strip()
+            for k in ("start", "end")
+            if str(emotional_arc.get(k, "")).strip()
+        )
+    else:
+        emotional_arc = str(emotional_arc).strip()
+
+    constraint_sections = ""
+    if mandatory_tasks:
+        constraint_sections += (
+            "\n## 本章必须完成的叙事任务（缺一即不合格）\n"
+            + json.dumps(mandatory_tasks, ensure_ascii=False, indent=2) + "\n"
+        )
+    if emotional_arc:
+        constraint_sections += f"\n## 本章情感弧线\n{emotional_arc}\n"
+    if pov:
+        constraint_sections += f"\n## 叙事视角\n{pov}\n"
+    if writing_notes:
+        constraint_sections += f"\n## 写作基调（本章重要指导）\n{writing_notes}\n"
 
     prev_section = ""
     if prev_content.strip():
@@ -4926,7 +5213,7 @@ async def ai_generate_chapter_content(book_id: str, req: ChapterContentReq):
 
 ## 结尾钩子
 {end_hook}
-{prev_section}
+{constraint_sections}{prev_section}
 ## 主角信息
 - 姓名：{pname}
 - 外部目标：{p_need}
@@ -4986,24 +5273,11 @@ async def ai_generate_chapter_content(book_id: str, req: ChapterContentReq):
     warnings: list[str] = []
     settlement = None
 
-    # 1. 生成章节摘要（供后续章节提示词衔接）
+    # 1. 生成章节摘要（按章覆盖，重复生成不会累积矛盾摘要）
     try:
-        summary_prompt = f"""请为以下小说章节生成一份简明摘要（200-300字），包含：
-- 本章核心事件（1-2句）
-- 角色情感变化
-- 重要伏笔推进或埋设
-- 章末状态（为下一章铺垫）
-
-章节正文：
-{content[:4000]}"""
-
-        summary_resp = await asyncio.to_thread(lambda: llm.complete([
-            LLMMessage("system", "你是小说编辑助手，生成简洁客观的章节摘要。"),
-            LLMMessage("user", summary_prompt),
-        ]).content)
-
-        summary_md = f"\n## 第 {req.chapter_number} 章《{detailed.get('title', '')}》\n{summary_resp.strip()}\n---\n"
-        sm.append_truth(TruthFileKey.CHAPTER_SUMMARIES, summary_md)
+        await _regenerate_chapter_summary(
+            llm, sm, req.chapter_number, content, detailed.get("title", "")
+        )
     except Exception as e:
         import traceback; traceback.print_exc()
         warnings.append(f"章节摘要生成失败：{e}")

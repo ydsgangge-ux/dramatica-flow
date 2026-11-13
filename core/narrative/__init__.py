@@ -293,8 +293,8 @@ class NarrativeEngine:
 - 内在渴望：{protagonist.need.internal}
 - 性格锁定：{'、'.join(protagonist.behavior_lock)}
 
-## 当前世界状态
-{world_context[:1500]}
+## 世界观与前情（连续性参照）
+{world_context[:2500]}
 
 ## 严格要求
 - 每章必须包含 summary（章节摘要，50字以内）

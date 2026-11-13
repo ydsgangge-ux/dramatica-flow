@@ -3638,14 +3638,20 @@ async function saveEditedContent(kind) {
   if (!body) return;
   const ch = parseInt(document.getElementById('audit-chapter').value);
   const status = document.getElementById('edit-save-status');
-  if (status) status.textContent = '保存中...';
+  if (status) status.textContent = '保存中，并同步摘要/状态...';
   try {
-    await api(`/books/${currentBook.id}/chapters/${ch}/content`, {
+    const res = await api(`/books/${currentBook.id}/chapters/${ch}/content`, {
       method: 'PUT', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ content: body.value, kind: kind }),
+      body: JSON.stringify({ content: body.value, kind: kind, refresh: 'all' }),
     });
-    toast('正文已保存', true);
-    if (status) status.textContent = '已保存';
+    const warns = res.warnings || [];
+    if (warns.length) {
+      toast('正文已保存，但同步有警告：' + warns.join('；'), false);
+      if (status) status.textContent = '已保存（同步有警告）';
+    } else {
+      toast('正文已保存，摘要与故事状态已同步', true);
+      if (status) status.textContent = '已保存并同步';
+    }
     await loadBookData();
   } catch (e) { toast('保存失败: ' + e.message, false); if (status) status.textContent = ''; }
 }
