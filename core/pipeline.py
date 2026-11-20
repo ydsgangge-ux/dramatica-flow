@@ -405,14 +405,17 @@ class WritingPipeline:
         # 跨线程因果链：摘录其他线程已确立的因果，作为本章不应与其冲突的参照
         cross_links = [
             cl for cl in ws.causal_chain
-            if cl.thread_id and cl.thread_id != current_thread_id
-            and cl.chapter <= chapter
+            if cl.chapter <= chapter
+            and ((cl.thread_id and cl.thread_id != current_thread_id)
+                 or (cl.source_thread_id and cl.source_thread_id != current_thread_id))
         ]
         if cross_links:
             parts.append("### 受其他线程影响的因果链\n")
             for cl in cross_links[-5:]:
+                origin = cl.source_thread_id or cl.thread_id
+                chain = f"{origin} → {cl.thread_id}" if origin != cl.thread_id else origin
                 parts.append(
-                    f"- Ch.{cl.chapter}（{cl.thread_id}）：{cl.event}（因：{cl.cause}）"
+                    f"- Ch.{cl.chapter}（{chain}）：{cl.event}（因：{cl.cause}）"
                 )
             parts.append("")
 
@@ -449,6 +452,7 @@ class WritingPipeline:
                     location_id=loc_id,
                     action=f"移动到 {loc_id}",
                     thread_id=thread_id,
+                    type="position",
                 )
                 self.sm.add_timeline_event(event)
 
@@ -467,6 +471,7 @@ class WritingPipeline:
                     character_id=char_id,
                     action=f"情感转折：{emotion}（强度{intensity}/10），触发：{trigger[:30]}",
                     thread_id=thread_id,
+                    type="emotion",
                 )
                 self.sm.add_timeline_event(event)
 
@@ -483,6 +488,7 @@ class WritingPipeline:
                     character_id=char_id,
                     action=f"得知：{info_key}",
                     thread_id=thread_id,
+                    type="info",
                 )
                 self.sm.add_timeline_event(event)
 
@@ -497,6 +503,8 @@ class WritingPipeline:
                 character_id=pov_id,
                 action=blueprint.core_conflict[:60],
                 thread_id=thread_id,
+                type="conflict",
+                is_key=True,
             )
             self.sm.add_timeline_event(event)
 

@@ -116,7 +116,11 @@ class DeepSeekProvider(LLMProvider):
         stream = self.client.chat.completions.create(
             messages=[m.to_dict() for m in messages], **self._build_kwargs(stream=True))
         for chunk in stream:
-            delta = chunk.choices[0].delta.content or ""
+            # 部分 OpenAI 兼容端点会发送 choices 为空的收尾块（usage/心跳），必须跳过
+            if not getattr(chunk, "choices", None):
+                continue
+            choice = chunk.choices[0]
+            delta = getattr(getattr(choice, "delta", None), "content", None) or ""
             if delta:
                 full_content += delta
                 on_chunk(delta)
@@ -173,7 +177,11 @@ class OllamaProvider(LLMProvider):
         stream = self.client.chat.completions.create(
             messages=[m.to_dict() for m in messages], **self._build_kwargs(stream=True))
         for chunk in stream:
-            delta = chunk.choices[0].delta.content or ""
+            # 部分 OpenAI 兼容端点会发送 choices 为空的收尾块（usage/心跳），必须跳过
+            if not getattr(chunk, "choices", None):
+                continue
+            choice = chunk.choices[0]
+            delta = getattr(getattr(choice, "delta", None), "content", None) or ""
             if delta:
                 full_content += delta
                 on_chunk(delta)

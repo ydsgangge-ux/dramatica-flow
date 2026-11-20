@@ -74,7 +74,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",s
 .chip.on{background:var(--blue-bg);color:var(--blue);border-color:rgba(88,166,255,.3)}
 .center-hd-right{margin-left:auto;display:flex;align-items:center;gap:8px}
 .zoom-wrap{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3)}
-.zoom-input{width:60px;padding:3px 8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:11px;text-align:center}
+.zoom-input{width:46px;padding:3px 4px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:11px;text-align:center}
+.zoom-tag{font-size:10px;color:var(--text3);opacity:.85}
+.zoom-wrap .btn-sm{padding:2px 6px;font-size:12px;line-height:1}
 
 /* ── 泳道图区域 ── */
 .swimlane-outer{flex:1;overflow:auto;padding:0 0 14px 16px}
@@ -132,6 +134,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",s
 /* ── 事件颜色 tooltip ── */
 .ev-legend{display:flex;gap:10px;padding:8px 14px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--bg);flex-wrap:wrap}
 .ev-legend-item{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text3)}
+.legend-hint{margin-left:auto;font-size:10px;color:var(--text3);opacity:.75;white-space:nowrap}
 .ev-legend-dot{width:10px;height:10px;border-radius:3px}
 
 /* ── 右侧详情 ── */
@@ -194,6 +197,88 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",s
 
 /* ── 提示 tooltip ── */
 .tooltip-wrap{position:relative}
+
+/* ═══════════════════════════════════════════════════════
+   UI 增强层（后写覆盖，保持原有结构不变）
+   ═══════════════════════════════════════════════════════ */
+body{background:radial-gradient(1400px 700px at 18% -12%,#131b27 0%,var(--bg-dark) 58%)}
+.topbar{background:rgba(22,27,34,.94);backdrop-filter:blur(10px)}
+.topbar-sub{color:var(--text2)}
+
+/* 书籍概览胶囊 */
+.meta-chip{display:inline-flex;align-items:center;gap:7px;height:26px;padding:0 11px;border:1px solid var(--border);border-radius:13px;background:var(--surface);font-size:11px;color:var(--text2);white-space:nowrap;max-width:340px;overflow:hidden}
+.meta-chip .dot{width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0;box-shadow:0 0 6px rgba(63,185,80,.7)}
+.meta-chip b{color:var(--text);font-weight:600}
+.meta-chip .msep{color:var(--border3)}
+
+/* 左侧线程卡片 */
+.thread-item{padding:9px 11px}
+.thread-item.active{box-shadow:inset 0 0 0 1px rgba(88,166,255,.4),0 2px 10px rgba(0,0,0,.25)}
+.ti-name{align-items:center}
+.ti-bar{height:3px;border-radius:2px;background:var(--surface3);margin-top:7px;overflow:hidden}
+.ti-bar>i{display:block;height:100%;border-radius:2px;transition:width .2s}
+.ti-range{font-variant-numeric:tabular-nums}
+
+/* 筛选计数 */
+.chip .chip-n{margin-left:5px;opacity:.65;font-variant-numeric:tabular-nums;font-size:10px}
+.chip.on .chip-n{opacity:.85}
+.center-hd{background:linear-gradient(180deg,var(--bg),rgba(22,27,34,.55))}
+
+/* 泳道滚动区 */
+.swimlane-outer{padding:0 0 22px 0;cursor:grab}
+.swimlane-outer.panning{cursor:grabbing;user-select:none}
+.swimlane-outer.panning .ev,.swimlane-outer.panning .lane-label{cursor:grabbing}
+.swimlane-outer .ev,.swimlane-outer .lane-label{cursor:pointer}
+.swimlane-inner{padding:8px 16px 0 0;min-width:0}
+.ruler-row{position:sticky;top:0;z-index:14;background:linear-gradient(180deg,var(--bg-dark) 72%,rgba(13,17,23,0));padding:6px 0 8px;margin-bottom:2px}
+.ruler-track{height:42px!important}
+.act-label{top:2px}
+.ruler-mark{top:24px}
+.ruler-mark::before{top:-6px;height:5px}
+.ruler-label-cell{position:sticky;left:0;z-index:15;width:176px;background:var(--bg-dark)}
+.lane-row{position:relative;margin-bottom:8px;padding:2px 0;border-radius:var(--radius-lg);transition:background .12s}
+.lane-row:hover{background:rgba(255,255,255,.016)}
+.lane-label{position:sticky;left:0;z-index:50;width:176px;padding:0 14px 0 0;display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:3px;background:var(--bg-dark);line-height:1.3!important;text-align:right;cursor:pointer;align-self:stretch}
+.lane-label .ll-name{font-size:12px;font-weight:600;max-width:158px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lane-label .ll-meta{font-size:9px;color:var(--text3);display:flex;gap:6px;align-items:center;justify-content:flex-end;font-variant-numeric:tabular-nums}
+.lane-label:hover .ll-name{text-decoration:underline}
+.lane-track{background:linear-gradient(180deg,rgba(28,35,51,.95),rgba(28,35,51,.55));box-shadow:inset 0 1px 0 rgba(255,255,255,.025)}
+.lane-track.highlight{box-shadow:inset 0 0 0 1px rgba(88,166,255,.5),0 0 0 1px rgba(88,166,255,.14)}
+
+/* 事件块 */
+.ev{border-radius:5px;padding:0 6px;box-shadow:0 1px 2px rgba(0,0,0,.45),inset 0 0 0 1px rgba(255,255,255,.1);transition:transform .12s,box-shadow .12s,filter .12s}
+.ev:hover{transform:translateY(-1px) scaleY(1.12);box-shadow:0 6px 16px rgba(0,0,0,.55),inset 0 0 0 1px rgba(255,255,255,.28);filter:saturate(1.12)}
+.ev-key{box-shadow:0 0 0 1px rgba(240,136,62,.55),0 0 10px rgba(240,136,62,.22),inset 0 0 0 1px rgba(255,255,255,.12)}
+.ev.sel{outline:2px solid #fff;outline-offset:1px;box-shadow:0 0 0 3px rgba(88,166,255,.35)}
+.ev.dimmed{opacity:.2!important;height:8px!important;top:8px!important;font-size:0!important;width:5px!important;min-width:5px!important;padding:0!important}
+
+/* 当前章标线 */
+.lane-now{width:2px;background:linear-gradient(180deg,transparent,var(--green),transparent);opacity:.75}
+
+/* 迷你总览 */
+.minimap-outer{height:30px;background:linear-gradient(180deg,var(--surface2),var(--surface));border-radius:6px}
+.minimap-viewport{border-width:2px;transition:none}
+
+/* 右侧详情 */
+.detail{width:300px;background:linear-gradient(180deg,var(--bg),#141a24)}
+.detail-hd{position:sticky;top:0;z-index:3;background:rgba(22,27,34,.96);backdrop-filter:blur(6px)}
+.dt-card{border:1px solid var(--border);border-radius:8px;padding:11px 12px;margin-bottom:10px;background:var(--surface)}
+.dt-tag{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;white-space:nowrap}
+.dt-kv{display:flex;gap:8px;font-size:11px;padding:3px 0;color:var(--text3)}
+.dt-kv b{color:var(--text);font-weight:500}
+.dt-chain{font-size:11px;line-height:1.7;padding:8px 10px;border-left:2px solid var(--blue);background:rgba(88,166,255,.05);border-radius:0 6px 6px 0;margin-top:6px}
+
+/* 底部面板 */
+.causal-row{padding:7px 9px;border-radius:6px;border-bottom:none;margin-bottom:4px;background:var(--surface);flex-wrap:wrap;gap:6px}
+.causal-row:hover{background:var(--surface2)}
+.causal-ch{font-size:10px;padding:1px 7px;border-radius:8px;background:var(--surface3);color:var(--text2);font-variant-numeric:tabular-nums;white-space:nowrap}
+.warn-row{background:rgba(210,153,34,.08);border-color:rgba(210,153,34,.25)}
+
+/* 空态 / 加载骨架 */
+.empty-icon{font-size:44px;opacity:.35}
+.loader{padding:52px 40px}
+.skeleton{height:34px;border-radius:6px;background:linear-gradient(90deg,var(--surface) 25%,var(--surface2) 37%,var(--surface) 63%);background-size:400% 100%;animation:sk 1.2s ease infinite;margin-bottom:8px}
+@keyframes sk{0%{background-position:100% 0}100%{background-position:0 0}}
 </style>
 </head>
 <body>
@@ -204,6 +289,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",s
   <div class="sep"></div>
   <div class="topbar-sub">多线叙事时间线</div>
   <div class="topbar-right">
+    <span class="meta-chip" id="book-meta" title="当前书籍概览"><span class="dot"></span><span>未加载</span></span>
     <select class="bk-select" id="bk-sel" onchange="loadBook(this.value)">
       <option value="">-- 选择书籍 --</option>
       <option value="demo">吞天魔帝（演示）</option>
@@ -211,7 +297,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",s
     <select class="bk-select" id="ch-sel" style="min-width:100px">
       <option value="">提取章节</option>
     </select>
-    <button class="btn btn-primary" onclick="extractData()" title="从章节正文提取时间线数据（需后端）">⚡ 提取</button>
+    <button class="btn btn-primary" onclick="extractData(this)" title="从章节正文提取时间线数据（需后端）">⚡ 提取</button>
   </div>
 </div>
 
@@ -245,9 +331,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",s
         <div class="chip" data-f="key" onclick="setFilter('key',this)">关键节点</div>
       </div>
       <div class="center-hd-right">
-        <div class="zoom-wrap">
-          缩放
-          <input class="zoom-input" id="zoom-input" type="number" value="100" min="40" max="300" step="10" onchange="setZoom(this.value)">%
+        <div class="zoom-wrap" title="横向缩放控制章节宽度；纵向缩放控制泳道高度。也可用 Ctrl+滚轮整体缩放、Alt+滚轮仅纵向缩放">
+          <span class="zoom-tag">横</span>
+          <input class="zoom-input" id="zoom-input" type="number" value="100" min="40" max="300" step="10" onchange="setZoom(this.value)">
+          <span class="zoom-tag">纵</span>
+          <input class="zoom-input" id="zoomy-input" type="number" value="100" min="50" max="220" step="10" onchange="setZoomY(this.value)">
+          <button class="btn btn-ghost btn-sm" onclick="fitToWindow()" title="让整本书的时间线铺满窗口宽度">适应</button>
+          <button class="btn btn-ghost btn-sm" onclick="resetZoom()" title="缩放恢复 100% 并回到起点">&#8635;</button>
         </div>
       </div>
     </div>
@@ -260,6 +350,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",s
       <div class="ev-legend-item"><div class="ev-legend-dot" style="background:#c06010"></div>核心冲突</div>
       <div class="ev-legend-item"><div class="ev-legend-dot" style="background:linear-gradient(135deg,#c06010,#b83c3c)"></div>关键节点</div>
       <div class="ev-legend-item"><div class="ev-legend-dot" style="background:#5a3aa0"></div>其他</div>
+      <span class="legend-hint">Ctrl+滚轮缩放 · 按住左键拖动平移 · 滚轮正常滚动</span>
     </div>
 
     <!-- 章节范围 + 迷你总览 -->
@@ -286,7 +377,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",s
       <div class="empty" id="empty-state">
         <div class="empty-icon">〰</div>
         <div class="empty-title">选择书籍开始</div>
-        <div class="empty-desc">从右上角下拉菜单选择书籍，即可查看多线叙事泳道图。演示模式包含完整示例数据。</div>
+        <div class="empty-desc">从右上角下拉菜单选择书籍，即可查看多线叙事泳道图。点击左侧线程名可高亮该线，点击事件方块查看详情。</div>
       </div>
     </div>
   </div>
@@ -486,15 +577,20 @@ const DEMO = {
 // ═══════════════════════════════════════════════════════
 let state = {
   bookId: '',
+  bookTitle: '',
+  demo: false,
   threads: [],
   timeline: [],
   timelineFull: [],   // 完整时间线（不受范围过滤）
   causal: [],
   dormant: [],
+  threadChapterMap: {},  // { thread_id: [已提取章节] }
   currentChapter: 0,
-  maxChapters: 90,
+  targetChapters: 0,
+  maxChapters: 0,
   filter: 'all',
-  zoom: 100,
+  zoom: 100,          // 横向缩放（章节宽度）
+  zoomY: 100,         // 纵向缩放（泳道 / 事件块高度）
   selectedIdx: null,
   activeTab: 'causal',
   highlightThread: null,
@@ -502,25 +598,163 @@ let state = {
   rangeTo: 999,       // 章节范围终点
 };
 
+let BOOKS_CACHE = [];
+let _suppressClick = false;   // 拖动平移结束后抑制一次 click
+const FILTER_LABEL = {all:'全部', position:'位置', emotion:'情感', info:'信息', conflict:'冲突', key:'关键节点'};
+
 // ═══════════════════════════════════════════════════════
 // 初始化
 // ═══════════════════════════════════════════════════════
 async function init() {
+  const sel = document.getElementById('bk-sel');
   try {
     const resp = await fetch('/api/books');
     const books = await resp.json();
-    const sel = document.getElementById('bk-sel');
-    books.forEach(b => {
-      const opt = document.createElement('option');
-      opt.value = b.id; opt.textContent = b.title;
-      sel.appendChild(opt);
-    });
+    BOOKS_CACHE = Array.isArray(books) ? books : [];
   } catch(e) { /* 没有后端，用演示数据 */ }
 
-  // 自动加载演示数据
-  const sel = document.getElementById('bk-sel');
-  sel.value = 'demo';
-  loadBook('demo');
+  const opts = BOOKS_CACHE.map(b =>
+    `<option value="${escAttr(b.id)}">${escHtml(b.title || b.id)} · ${b.current_chapter || 0}章</option>`
+  ).join('');
+  sel.innerHTML = `<option value="">-- 选择书籍 --</option>${opts}<option value="demo">◈ 吞天魔帝（演示数据）</option>`;
+
+  // 上次打开的书 > 第一本真实书籍 > 演示数据
+  const saved = localStorage.getItem('tl_book') || '';
+  const hasSaved = saved && Array.from(sel.options).some(o => o.value === saved);
+  const prefer = hasSaved ? saved : (BOOKS_CACHE.length ? BOOKS_CACHE[0].id : 'demo');
+  sel.value = prefer;
+
+  bindEvents();
+  await loadBook(prefer);
+
+  // 缩放不再从本地恢复：避免上次缩到极小后每次打开都“看不见内容”
+  const f = localStorage.getItem('tl_filter') || 'all';
+  const chip = document.querySelector(`.chip[data-f="${f}"]`) || document.querySelector('.chip[data-f="all"]');
+  if (chip) setFilter(f, chip);
+
+  // 恢复上次的章节范围（超出范围时由 commitRange 自动收敛）
+  const savedRange = localStorage.getItem('tl_range');
+  if (savedRange) {
+    const [a, b] = savedRange.split('-').map(n => parseInt(n, 10));
+    if (a > 0 && b > 0) commitRange(a, b, false);
+  }
+}
+
+function bindEvents() {
+  // 事件委托：避免把 ID/文本拼进 onclick 带来的转义与注入问题
+  document.getElementById('thread-list').addEventListener('click', e => {
+    const item = e.target.closest('.thread-item');
+    if (item && item.dataset.tid) highlightThread(item.dataset.tid);
+  });
+
+  const outer = document.getElementById('swimlane-outer');
+
+  outer.addEventListener('click', e => {
+    if (_suppressClick) { _suppressClick = false; return; }  // 刚拖动过，不当作点击
+    const evEl = e.target.closest('.ev');
+    if (evEl) { showDetail(parseInt(evEl.dataset.idx, 10)); return; }
+    const lbl = e.target.closest('.lane-label');
+    if (lbl && lbl.dataset.tid) highlightThread(lbl.dataset.tid);
+  });
+
+  // ── 滚轮 ──
+  // 普通滚轮 = 正常滚动（不劫持，避免误缩放导致内容“消失”）
+  // Ctrl/Cmd + 滚轮 = 横纵等比缩放（以光标为锚点）；Alt + 滚轮 = 仅纵向缩放
+  outer.addEventListener('wheel', e => {
+    if (!(e.ctrlKey || e.metaKey || e.altKey)) return;   // 交给浏览器原生滚动
+    e.preventDefault();
+    const dy = Math.max(-200, Math.min(200, e.deltaY || 0));
+    if (!dy) return;
+    const factor = Math.pow(1.0014, -dy);      // 向上滚放大，向下滚缩小（约 15%/格）
+    if (e.altKey && !e.ctrlKey && !e.metaKey) zoomAtCursor(factor, e.clientX, e.clientY, 'y');
+    else zoomAtCursor(factor, e.clientX, e.clientY, 'both');
+  }, { passive: false });
+
+  // ── 左键拖动平移 ──
+  let pan = null;
+  outer.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    // 排除滚动条区域与表单控件
+    if (e.offsetX >= outer.clientWidth || e.offsetY >= outer.clientHeight) return;
+    if (e.target.closest('input,button,select,a')) return;
+    pan = { x: e.clientX, y: e.clientY, left: outer.scrollLeft, top: outer.scrollTop, moved: false };
+    outer.classList.add('panning');
+    e.preventDefault();
+  });
+
+  window.addEventListener('mousemove', e => {
+    if (!pan) return;
+    const dx = e.clientX - pan.x;
+    const dy = e.clientY - pan.y;
+    if (!pan.moved && Math.abs(dx) + Math.abs(dy) > 3) pan.moved = true;
+    if (!pan.moved) return;
+    outer.scrollLeft = pan.left - dx;
+    outer.scrollTop = pan.top - dy;
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (!pan) return;
+    const moved = pan.moved;
+    pan = null;
+    outer.classList.remove('panning');
+    if (moved) {
+      _suppressClick = true;
+      setTimeout(() => { _suppressClick = false; }, 0);
+    }
+  });
+}
+
+// 当前每章像素宽（与 renderSwimlane 使用同一套公式）
+// 长书（章节多）默认压得更窄，先看到整体节奏，再 Ctrl+滚轮放大细看
+function chapterBaseWidth(span) {
+  return Math.max(12, Math.min(110, Math.round(920 / span)));
+}
+
+function chapterWidth() {
+  const from = state.rangeFrom || 1;
+  const to = Math.max(from, state.rangeTo || getMaxChapter());
+  const span = Math.max(1, to - from + 1);
+  return Math.max(6, Math.round(chapterBaseWidth(span) * (state.zoom / 100)));
+}
+
+// 以光标位置为锚点缩放，保证鼠标下的内容不跑偏
+function zoomAtCursor(factor, clientX, clientY, mode) {
+  const outer = document.getElementById('swimlane-outer');
+  const rect = outer.getBoundingClientRect();
+  const LABEL_W = 176;
+  const px = clientX - rect.left;
+  const py = clientY - rect.top;
+
+  const beforeChW = chapterWidth() || 1;
+  const beforeLeft = outer.scrollLeft;
+  const beforeTop = outer.scrollTop;
+  const beforeSH = Math.max(1, outer.scrollHeight);
+
+  // 先按横纵上限收敛倍数，避免一个轴到顶后画面被拉变形
+  let f = factor;
+  if (mode !== 'y') {
+    f = Math.min(f, 300 / state.zoom);
+    f = Math.max(f, 40 / state.zoom);
+  }
+  if (mode !== 'x') {
+    f = Math.min(f, 220 / state.zoomY);
+    f = Math.max(f, 50 / state.zoomY);
+  }
+
+  const nx = mode === 'y' ? state.zoom : clampZZoomX(state.zoom * f);
+  const ny = mode === 'x' ? state.zoomY : clampZZoomY(state.zoomY * f);
+  if (nx === state.zoom && ny === state.zoomY) return;
+
+  setZoom(nx, true);
+  setZoomY(ny, true);
+  renderSwimlane();
+
+  // 恢复锚点：光标下的章节与纵向比例保持不动
+  const newChW = chapterWidth() || 1;
+  const chFrac = (beforeLeft + px - LABEL_W) / beforeChW;
+  outer.scrollLeft = Math.max(0, LABEL_W + chFrac * newChW - px);
+  const ratioY = (beforeTop + py) / beforeSH;
+  outer.scrollTop = Math.max(0, ratioY * Math.max(1, outer.scrollHeight) - py);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -533,49 +767,63 @@ async function loadBook(bookId) {
   state.bookId = bookId;
   localStorage.setItem('tl_book', bookId);
 
-  document.getElementById('swimlane-outer').innerHTML = '<div class="loader"><div class="spin"></div>加载中...</div>';
+  const outer = document.getElementById('swimlane-outer');
+  outer.innerHTML = `<div style="padding:18px 20px 18px 180px">${'<div class="skeleton"></div>'.repeat(5)}</div>`;
 
   if (bookId === 'demo') {
     // 演示模式：直接用内嵌数据
-    applyData(DEMO.threads, DEMO.timeline, DEMO.causal, DEMO.dormant, DEMO.book.current_chapter, DEMO.book.target_chapters);
+    state.demo = true;
+    state.bookTitle = DEMO.book.title;
+    applyData(DEMO.threads, DEMO.timeline, DEMO.causal_links, DEMO.dormant,
+              DEMO.book.current_chapter, DEMO.book.target_chapters, {});
     populateChapterSelect(DEMO.book.current_chapter);
     return;
   }
 
+  state.demo = false;
   try {
     const [statusResp, tlResp] = await Promise.all([
-      fetch(`/api/books/${bookId}/threads/status`),
-      fetch(`/api/books/${bookId}/timeline`),
+      fetch(`/api/books/${encodeURIComponent(bookId)}/threads/status`),
+      fetch(`/api/books/${encodeURIComponent(bookId)}/timeline`),
     ]);
+    if (!statusResp.ok) throw new Error(`状态接口返回 ${statusResp.status}`);
     const status = await statusResp.json();
-    const timeline = await tlResp.json().catch(()=>[]);
+    const timeline = await tlResp.json().catch(() => []);
+    const book = BOOKS_CACHE.find(b => b.id === bookId);
+    state.bookTitle = book?.title || bookId;
     applyData(
       status.threads || [],
       Array.isArray(timeline) ? timeline : [],
       status.cross_thread_causal_links || [],
       status.dormant || [],
       status.current_chapter || 0,
-      status.target_chapters || 90,
+      book?.target_chapters || 0,
+      status.thread_chapter_map || {},
     );
     populateChapterSelect(status.current_chapter || 0);
   } catch(e) {
-    document.getElementById('swimlane-outer').innerHTML =
-      `<div class="empty"><div class="empty-icon">!</div><div class="empty-title">加载失败</div><div class="empty-desc">${e.message}</div></div>`;
+    outer.innerHTML = `<div class="empty"><div class="empty-icon">!</div><div class="empty-title">加载失败</div><div class="empty-desc">${escHtml(e.message)}<br>请确认后端服务已启动（默认 8766 端口）。</div></div>`;
+    setMeta();
   }
 }
 
-function applyData(threads, timeline, causal, dormant, currentChapter, maxChapters) {
-  state.threads = threads;
-  state.timelineFull = timeline;
-  state.causal = causal;
-  state.dormant = dormant;
-  state.currentChapter = currentChapter;
-  state.maxChapters = maxChapters;
+function applyData(threads, timeline, causal, dormant, currentChapter, targetChapters, chapterMap) {
+  state.threads = threads || [];
+  state.timelineFull = timeline || [];
+  state.causal = Array.isArray(causal) ? causal : [];
+  state.dormant = Array.isArray(dormant) ? dormant : [];
+  state.threadChapterMap = chapterMap || {};
+  state.currentChapter = currentChapter || 0;
+  state.targetChapters = targetChapters || 0;
+  state.highlightThread = null;
+  state.selectedIdx = null;
+  closeDetail();
 
-  // 初始化章节范围
-  const maxCh = Math.max(1, currentChapter||1, ...timeline.map(e=>e.chapter||1), ...threads.map(t=>t.last_active_chapter||1));
+  // 章节上限：当前进度 / 事件最远章节 / 线程最后活跃章节，三者取最大
+  const maxCh = getMaxChapter();
+  state.maxChapters = maxCh;
   state.rangeFrom = 1;
-  state.rangeTo = maxCh + 5;
+  state.rangeTo = maxCh;
 
   // 显示范围控件（章节 > 30 时才有意义）
   const showRange = maxCh > 30;
@@ -590,6 +838,44 @@ function applyData(threads, timeline, causal, dormant, currentChapter, maxChapte
   renderThreadList();
   renderSwimlane();
   renderBottom();
+  updateChipCounts();
+  setMeta();
+}
+
+function getMaxChapter() {
+  return Math.max(1,
+    state.currentChapter || 0,
+    ...state.timelineFull.map(e => e.chapter || 1),
+    ...state.threads.map(t => t.last_active_chapter || 1));
+}
+
+function setMeta() {
+  const el = document.getElementById('book-meta');
+  if (!el) return;
+  if (!state.bookId) {
+    el.innerHTML = '<span class="dot" style="background:var(--text3);box-shadow:none"></span><span>未加载</span>';
+    return;
+  }
+  document.title = `${state.bookTitle || state.bookId} · 多线叙事时间线 — Dramatica-Flow`;
+  const cur = state.currentChapter || 0;
+  const total = state.targetChapters ? `/${state.targetChapters}` : '';
+  el.innerHTML = `<span class="dot"></span><b>${escHtml(state.bookTitle || state.bookId)}</b>`
+    + `<span class="msep">·</span>${cur}${total} 章`
+    + `<span class="msep">·</span>${state.threads.length} 线程`
+    + `<span class="msep">·</span>${state.timelineFull.length} 事件`
+    + (state.demo ? '<span class="msep">·</span>演示' : '');
+}
+
+function updateChipCounts() {
+  const counts = {all: state.timelineFull.length};
+  state.timelineFull.forEach(ev => {
+    const k = catOf(ev);
+    counts[k] = (counts[k] || 0) + 1;
+  });
+  document.querySelectorAll('#filter-chips .chip').forEach(chip => {
+    const f = chip.dataset.f;
+    chip.innerHTML = `${FILTER_LABEL[f] || f}<span class="chip-n">${counts[f] || 0}</span>`;
+  });
 }
 
 function applyRangeFilter() {
@@ -600,15 +886,20 @@ function applyRangeFilter() {
     return ch >= from && ch <= to;
   });
   const info = document.getElementById('range-info');
-  if (info) info.textContent = `显示 ${from}~${to} 章 / 共 ${state.timeline.length} 事件`;
+  if (info) info.textContent = `Ch ${from}–${to} · 范围内 ${state.timeline.length} / 共 ${state.timelineFull.length} 事件`;
 }
 
 function resetView() {
-  state.bookId = '';
-  state.threads = []; state.timeline = [];
-  document.getElementById('thread-list').innerHTML = '<div class="detail-empty" style="padding:24px">选择书籍后显示</div>';
+  state.bookId = ''; state.bookTitle = ''; state.demo = false;
+  state.threads = []; state.timeline = []; state.timelineFull = [];
+  state.causal = []; state.dormant = []; state.threadChapterMap = {};
+  document.getElementById('thread-list').innerHTML = '<div class="detail-empty" style="padding:24px 16px">选择书籍后显示</div>';
   document.getElementById('thread-count').textContent = '0';
-  document.getElementById('swimlane-outer').innerHTML = '<div class="empty" id="empty-state"><div class="empty-icon">〰</div><div class="empty-title">选择书籍开始</div><div class="empty-desc">从右上角下拉菜单选择书籍。演示模式包含完整示例数据。</div></div>';
+  document.getElementById('swimlane-outer').innerHTML = '<div class="empty" id="empty-state"><div class="empty-icon">〰</div><div class="empty-title">选择书籍开始</div><div class="empty-desc">从右上角下拉菜单选择书籍，即可查看多线叙事泳道图。</div></div>';
+  document.getElementById('range-bar').style.display = 'none';
+  document.getElementById('minimap-wrap').style.display = 'none';
+  document.getElementById('ch-sel').innerHTML = '<option value="">提取章节</option>';
+  setMeta();
   closeDetail();
 }
 
@@ -619,47 +910,60 @@ function renderThreadList() {
   const el = document.getElementById('thread-list');
   document.getElementById('thread-count').textContent = state.threads.length;
   if (!state.threads.length) {
-    el.innerHTML = '<div class="detail-empty" style="padding:20px">暂无线程</div>'; return;
+    el.innerHTML = '<div class="detail-empty" style="padding:20px 16px">暂无线程</div>'; return;
   }
   const typeLabel = {main:'主线', subplot:'支线', parallel:'并行', flashback:'闪回'};
   const statusLabel = {active:'活跃', dormant:'休眠', resolved:'完结', merged:'已合并'};
 
   el.innerHTML = state.threads.map(t => {
-    const tc = 'tb-'+(t.type||'subplot');
-    const sc = 'tb-'+(t.status||'active');
-    const evCount = state.timelineFull.filter(e=>e.thread_id===t.id).length;
-    return `<div class="thread-item" data-tid="${t.id}" onclick="highlightThread('${t.id}')">
-      <div class="ti-name">
-        <span class="type-badge ${tc}">${typeLabel[t.type]||t.type}</span>
-        ${escHtml(t.name||t.id)}
+    const color = TYPE_COLORS[t.type] || TYPE_COLORS.default;
+    const tc = 'tb-' + (t.type || 'subplot');
+    const sc = 'tb-' + (t.status || 'active');
+    const evs = state.timelineFull.filter(e => e.thread_id === t.id);
+    const keyCount = evs.filter(e => e.is_key).length;
+    const weight = Math.round((t.weight == null ? 0.5 : t.weight) * 100);
+    const range = `Ch${t.start_chapter || 1}–${t.last_active_chapter || '—'}`;
+    return `<div class="thread-item ${state.highlightThread === t.id ? 'active' : ''}" data-tid="${escAttr(t.id)}" title="${escHtml(t.goal || t.name || t.id)}">
+      <div class="ti-name" style="justify-content:space-between">
+        <span style="display:flex;align-items:center;gap:6px;min-width:0">
+          <span class="thread-dot" style="background:${color}"></span>
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(t.name || t.id)}</span>
+        </span>
+        <span class="type-badge ${tc}" style="flex-shrink:0">${typeLabel[t.type] || t.type}</span>
       </div>
       <div class="ti-meta">
-        <span class="type-badge ${sc}">${statusLabel[t.status]||t.status||'活跃'}</span>
-        <span>${evCount} 事件</span>
-        ${t.pov_character_id?`<span>视角 ${t.pov_character_id}</span>`:''}
+        <span class="type-badge ${sc}">${statusLabel[t.status] || t.status || '活跃'}</span>
+        <span>${evs.length} 事件${keyCount ? ` · <span style="color:var(--orange)">${keyCount} 关键</span>` : ''}</span>
+        <span class="ti-range">${range}</span>
       </div>
+      <div class="ti-bar" title="篇幅权重 ${weight}%"><i style="width:${weight}%;background:${color}"></i></div>
     </div>`;
   }).join('');
+
+  applyHighlight();
 }
 
 function highlightThread(tid) {
-  if (state.highlightThread === tid) {
-    state.highlightThread = null;
-    document.querySelectorAll('.thread-item').forEach(el=>el.classList.remove('active'));
-    document.querySelectorAll('.lane-track').forEach(el=>el.classList.remove('highlight'));
-    document.querySelectorAll('.lane-row').forEach(el=>el.style.opacity='1');
-  } else {
-    state.highlightThread = tid;
-    document.querySelectorAll('.thread-item').forEach(el=>{
-      el.classList.toggle('active', el.dataset.tid===tid);
-    });
-    document.querySelectorAll('.lane-row').forEach(el=>{
-      el.style.opacity = el.dataset.tid===tid ? '1' : '0.3';
-    });
-    document.querySelectorAll('.lane-track').forEach(el=>{
-      el.classList.toggle('highlight', el.dataset.tid===tid);
-    });
+  state.highlightThread = (state.highlightThread === tid) ? null : tid;
+  document.querySelectorAll('.thread-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.tid === state.highlightThread);
+  });
+  applyHighlight();
+  if (state.highlightThread) {
+    const row = document.querySelector(`.lane-row[data-tid="${cssEsc(state.highlightThread)}"]`);
+    if (row) row.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
   }
+}
+
+// 把 state.highlightThread 落到 DOM（重绘后调用，保证高亮不丢）
+function applyHighlight() {
+  const tid = state.highlightThread;
+  document.querySelectorAll('.lane-row').forEach(el => {
+    el.style.opacity = (!tid || el.dataset.tid === tid) ? '1' : '0.32';
+  });
+  document.querySelectorAll('.lane-track').forEach(el => {
+    el.classList.toggle('highlight', !!tid && el.dataset.tid === tid);
+  });
 }
 
 // ═══════════════════════════════════════════════════════
@@ -669,6 +973,7 @@ const TYPE_COLORS = {
   main:'var(--blue)', subplot:'var(--purple)', parallel:'var(--cyan)',
   flashback:'var(--orange)', default:'var(--text2)'
 };
+const TYPE_LABEL = {main:'主线', subplot:'支线', parallel:'并行', flashback:'闪回'};
 const EV_CATS = {
   position:{cls:'ev-pos', color:'#1a6fd4'},
   emotion: {cls:'ev-emotion', color:'#b83c3c'},
@@ -678,10 +983,14 @@ const EV_CATS = {
   other:   {cls:'ev-other', color:'#5a3aa0'},
 };
 
+// 优先使用后端给出的 type；缺失时按 action 关键词回退推断
 function catOf(ev) {
+  if (!ev) return 'other';
   if (ev.is_key) return 'key';
-  const t=(ev.type||'').toLowerCase(), a=(ev.action||'').toLowerCase();
-  if (t.includes('position')||a.includes('位置')||a.includes('移动')||a.includes('到达')||a.includes('离开')||a.includes('进入')) return 'position';
+  const t = String(ev.type || '').toLowerCase();
+  if (t === 'position' || t === 'emotion' || t === 'info' || t === 'conflict') return t;
+  const a = String(ev.action || '').toLowerCase();
+  if (t.includes('position')||a.includes('位置')||a.includes('移动')||a.includes('到达')||a.includes('离开')||a.includes('进入')||a.includes('前往')) return 'position';
   if (t.includes('emotion')||a.includes('情感')||a.includes('情绪')||a.includes('动摇')||a.includes('坚定')||a.includes('愤怒')||a.includes('屈辱')||a.includes('震怒')) return 'emotion';
   if (t.includes('info')||a.includes('发现')||a.includes('揭示')||a.includes('得知')||a.includes('真相')||a.includes('秘密')) return 'info';
   if (t.includes('conflict')||a.includes('冲突')||a.includes('对决')||a.includes('暗算')||a.includes('设局')||a.includes('施压')||a.includes('反制')) return 'conflict';
@@ -695,200 +1004,224 @@ function renderSwimlane() {
     return;
   }
 
-  const zoom = state.zoom / 100;
+  const from = state.rangeFrom || 1;
+  const to = Math.max(from, state.rangeTo || getMaxChapter());
+  const span = Math.max(1, to - from + 1);
+  const zoomY = (state.zoomY || 100) / 100;
+  const LABEL_W = 176;
+
+  // 纵向尺寸（跟随纵向缩放）
+  const baseLaneH = Math.max(20, Math.round(34 * zoomY));
+  const rowStep   = Math.max(9,  Math.round(15 * zoomY));
+  const rowGap    = Math.max(4,  Math.round(8 * zoomY));
+  const evH0      = Math.max(12, Math.round(28 * zoomY));
+  const evH1      = Math.max(8,  Math.round(12 * zoomY));
+  const evFont0   = Math.max(8, Math.min(13, Math.round(10 * (0.85 + zoomY * 0.15))));
+  const laneFont  = Math.max(11, Math.min(17, Math.round(12 * (0.85 + zoomY * 0.15))));
+
+  // 每章像素宽：范围小自动放大，范围大自动压缩（与 chapterWidth() 同一公式）
+  const chW = chapterWidth();
+  const totalW = chW * span;
+
+  // 事件 → 全局索引（避免每次 indexOf 造成 O(n²)）
+  const idxMap = new Map();
+  state.timelineFull.forEach((ev, i) => idxMap.set(ev, i));
+
   const evByThread = {};
   state.timeline.forEach(ev => {
     const tid = ev.thread_id || '__other__';
-    (evByThread[tid] = evByThread[tid]||[]).push(ev);
+    (evByThread[tid] = evByThread[tid] || []).push(ev);
   });
 
-  // 计算范围（使用过滤后的 timeline）
-  const from = state.rangeFrom || 1;
-  const to = state.rangeTo || 9999;
-  const rangeSpan = to - from + 1;
-  const displayMax = Math.max(rangeSpan + 2, 12);
+  const act1 = Math.max(1, Math.round(span * 0.25));
+  const act2 = Math.max(act1 + 1, Math.round(span * 0.75));
 
-  // 计算每章宽度（px）— 范围小时自动放大
-  const baseChW = Math.max(28, Math.min(120, Math.round(900 / rangeSpan)));
-  const chW = Math.max(20, Math.round(baseChW * zoom));
-  const totalW = chW * displayMax;
+  let html = `<div class="swimlane-inner" style="width:${totalW + LABEL_W + 40}px">`;
 
-  // 三幕分界（相对于 from/to 范围）
-  const act1End = Math.round(displayMax * 0.25);
-  const act2End = Math.round(displayMax * 0.75);
-
-  // 渲染迷你总览热力条
-  renderMinimap();
-
-  let html = `<div class="swimlane-inner" style="width:${totalW + 170}px">`;
-
-  // ── 章节标尺 ──
+  // ── 章节标尺 + 三幕 ──
   html += `<div class="ruler-row">`;
   html += `<div class="ruler-label-cell"></div>`;
-  html += `<div class="ruler-track" style="width:${totalW}px;flex:none;position:relative;height:24px">`;
-
-  // 幕分区背景
-  const act2Left = ((act1End) / displayMax) * totalW;
-  const act3Left = ((act2End) / displayMax) * totalW;
-  html += `<div class="act-bg" style="left:${act2Left}px;background:rgba(88,166,255,.03)"><span class="act-label" style="left:${act2Left/2}px">第一幕</span></div>`;
-  html += `<div class="act-bg" style="left:${act3Left}px;background:rgba(188,140,255,.03)"><span class="act-label" style="left:${(act2Left+act3Left)/2}px">第二幕</span></div>`;
-  html += `<span class="act-label" style="left:${(act3Left+totalW)/2}px">第三幕</span>`;
-
-  // 章节刻度（自适应步长）
-  const step = displayMax <= 20 ? 1 : displayMax <= 50 ? 5 : displayMax <= 120 ? 10 : 20;
-  for (let i = 0; i <= rangeSpan; i += step) {
-    const ch = from + i;
-    const left = (i / displayMax) * totalW;
-    html += `<div class="ruler-mark" style="left:${left}px">Ch${ch}</div>`;
+  html += `<div class="ruler-track" style="width:${totalW}px;flex:none;position:relative;height:42px">`;
+  html += `<div class="act-bg" style="left:${act1*chW}px;width:${(act2-act1)*chW}px;background:rgba(88,166,255,.035)"></div>`;
+  html += `<div class="act-bg" style="left:${act2*chW}px;width:${(span-act2)*chW}px;background:rgba(188,140,255,.035);border-right:none"></div>`;
+  html += `<span class="act-label" style="left:${act1*chW/2}px">第一幕</span>`;
+  html += `<span class="act-label" style="left:${(act1+act2)*chW/2}px">第二幕</span>`;
+  html += `<span class="act-label" style="left:${(act2+span)*chW/2}px">第三幕</span>`;
+  const step = span <= 20 ? 1 : span <= 50 ? 5 : span <= 120 ? 10 : 20;
+  for (let i = 0; i < span; i += step) {
+    html += `<div class="ruler-mark" style="left:${i*chW + chW/2}px">Ch${from+i}</div>`;
   }
   html += `</div></div>`;
 
   // ── 泳道行 ──
-  const threadIds = [...new Set([
-    ...state.threads.map(t=>t.id),
-    ...Object.keys(evByThread).filter(k=>k!=='__other__')
-  ])];
+  const knownIds = state.threads.map(t => t.id);
+  const laneIds = [...knownIds,
+    ...Object.keys(evByThread).filter(k => k !== '__other__' && !knownIds.includes(k))];
+  if (evByThread['__other__']) laneIds.push('__other__');
 
-  threadIds.forEach(tid => {
-    const thread = state.threads.find(t=>t.id===tid);
-    const events = (evByThread[tid]||[]).filter(ev => {
-      if (state.filter === 'all') return true;
-      if (state.filter === 'key') return ev.is_key;
-      return catOf(ev) === state.filter;
-    });
+  laneIds.forEach(tid => {
+    const thread = state.threads.find(t => t.id === tid)
+      || (tid === '__other__'
+          ? { id: '__other__', name: '未归属事件', type: 'other', weight: 0 }
+          : { id: tid, name: tid, type: 'other', weight: 0 });
+    const color = TYPE_COLORS[thread.type] || TYPE_COLORS.default;
+    // 筛选时保留全部事件、只淡化非匹配项，避免丢失上下文
+    const events = evByThread[tid] || [];
 
-    const name = thread ? thread.name : tid;
-    const color = TYPE_COLORS[thread?.type] || TYPE_COLORS.default;
+    // 同章堆叠数量决定泳道高度
+    const chCount = {};
+    events.forEach(ev => { const ch = ev.chapter || 1; chCount[ch] = (chCount[ch] || 0) + 1; });
+    const maxStack = Math.max(1, ...Object.values(chCount));
+    const laneH = baseLaneH + (maxStack - 1) * rowStep;
 
-    // 计算同章最大事件数（决定泳道高度）
-    const chEventCount = {};
-    events.forEach(ev => {
-      const ch = ev.chapter || 1;
-      chEventCount[ch] = (chEventCount[ch]||0) + 1;
-    });
-    const maxStack = Math.max(1, ...Object.values(chEventCount));
-    const laneH = 34 + (maxStack - 1) * 16;  // 每多一行+16px
+    const meta = tid === '__other__'
+      ? `${events.length} 事件 · 未分配线程`
+      : `${TYPE_LABEL[thread.type] || thread.type} · 权重 ${Math.round((thread.weight == null ? 0.5 : thread.weight) * 100)}% · Ch${thread.start_chapter || 1}–${thread.last_active_chapter || '—'}`;
 
-    html += `<div class="lane-row" data-tid="${tid}" style="margin-bottom:6px">`;
-    html += `<div class="lane-label" style="color:${color};width:160px;line-height:${laneH}px" title="${tid}">${escHtml(name)}</div>`;
-    html += `<div class="lane-track" data-tid="${tid}" style="width:${totalW}px;flex:none;position:relative;height:${laneH}px">`;
+    html += `<div class="lane-row" data-tid="${escAttr(tid)}" style="margin-bottom:${rowGap}px">`;
+    html += `<div class="lane-label" data-tid="${escAttr(tid)}" style="min-height:${laneH}px" title="${escHtml(thread.goal || thread.name || tid)}">`
+         +  `<div class="ll-name" style="color:${color};font-size:${laneFont}px">${escHtml(thread.name || tid)}</div>`
+         +  `<div class="ll-meta">${escHtml(meta)}</div>`
+         +  `</div>`;
+    html += `<div class="lane-track" data-tid="${escAttr(tid)}" style="width:${totalW}px;flex:none;position:relative;height:${laneH}px;background-image:linear-gradient(90deg,rgba(255,255,255,.05) 1px,transparent 1px);background-size:${chW}px 100%">`;
 
-    // 当前章节标线
-    if (state.currentChapter > 0 && state.currentChapter >= from && state.currentChapter <= to) {
-      const nowLeft = ((state.currentChapter - from) / displayMax) * totalW;
-      html += `<div class="lane-now" style="left:${nowLeft}px" title="当前 Ch${state.currentChapter}"></div>`;
-    }
-
-    // 幕分界淡线
-    [act1End, act2End].forEach(ch => {
-      const x = ((ch) / displayMax) * totalW;
-      html += `<div style="position:absolute;left:${x}px;top:0;bottom:0;width:1px;background:var(--border);opacity:.4;pointer-events:none"></div>`;
-    });
-
-    // 事件方块（同章错开排列）
-    // 先按章节分组，记录每个事件在该章中的偏移
-    const chIdx = {};
-    events.forEach(ev => {
-      const ch = ev.chapter || 1;
-      if (!chIdx[ch]) chIdx[ch] = 0;
-      const stackIdx = chIdx[ch]++;
-      const left = ((ch - from) / displayMax) * totalW;
-      const w = Math.max(chW - 2, 8);
-      const topOff = stackIdx * 16;  // 每行错开 16px
-      const cat = catOf(ev);
-      const cls = EV_CATS[cat]?.cls || 'ev-other';
-      const globalIdx = state.timelineFull.indexOf(ev);
-      const showLabel = rangeSpan <= 30 ? (ev.action||'').slice(0,8) : (ev.is_key ? '\u2605' : '');
-      const isDimmed = state.filter === 'key' && !ev.is_key;
-      html += `<div class="ev ${cls}${isDimmed?' dimmed':''}"
-        style="left:${left}px;width:${w}px;top:${3 + topOff}px;height:${stackIdx === 0 ? 28 : 14}px;font-size:${stackIdx === 0 ? '10px' : '8px'};opacity:${isDimmed ? 0.35 : 1}"
-        onclick="showDetail(${globalIdx})"
-        title="Ch${ch}: ${escHtml(ev.action||'')} [${cat}]${ev.is_key?' \u2605':''}">${escHtml(showLabel)}</div>`;
-    });
-
-    // 线程活跃范围底色
-    if (thread) {
-      const tStart = Math.max(from, thread.start_chapter||1);
-      const tEnd = Math.min(to, thread.last_active_chapter || to);
-      if (tStart <= tEnd) {
-        const startX = ((tStart - from) / displayMax) * totalW;
-        const endX = ((tEnd - from + 1) / displayMax) * totalW;
-        html += `<div style="position:absolute;left:${startX}px;width:${endX-startX}px;top:1px;bottom:1px;background:${color};opacity:.04;pointer-events:none;border-radius:3px"></div>`;
+    // 线程活跃区间底色
+    if (tid !== '__other__') {
+      const ts = Math.max(from, thread.start_chapter || from);
+      const te = Math.min(to, thread.last_active_chapter || to);
+      if (ts <= te) {
+        html += `<div style="position:absolute;left:${(ts-from)*chW}px;width:${(te-ts+1)*chW}px;top:1px;bottom:1px;background:${color};opacity:.05;border-radius:3px;pointer-events:none"></div>`;
       }
     }
+
+    // 当前章节标线
+    if (state.currentChapter >= from && state.currentChapter <= to) {
+      html += `<div class="lane-now" style="left:${(state.currentChapter-from)*chW + chW/2}px" title="当前 Ch${state.currentChapter}"></div>`;
+    }
+
+    // 三幕分界
+    [act1, act2].forEach(a => {
+      html += `<div style="position:absolute;left:${a*chW}px;top:0;bottom:0;width:1px;background:var(--border);opacity:.45;pointer-events:none"></div>`;
+    });
+
+    // 事件方块（同章纵向错开）
+    const stack = {};
+    events.forEach(ev => {
+      const ch = ev.chapter || 1;
+      const row = stack[ch] || 0;
+      stack[ch] = row + 1;
+      const cat = catOf(ev);
+      const cls = (EV_CATS[cat] || EV_CATS.other).cls;
+      const idx = idxMap.get(ev);
+      // 空间够就显示事件摘要（2 字起），不够只留 ★ 标记，避免整片色块完全看不出内容
+      const maxChars = Math.max(2, Math.floor((chW - 6) / 9));
+      const label = chW >= 28 ? String(ev.action || '').slice(0, maxChars) : (ev.is_key ? '\u2605' : '');
+      const dimmed = state.filter !== 'all' && cat !== state.filter;
+      html += `<div class="ev ${cls}${dimmed ? ' dimmed' : ''}" data-idx="${idx}"
+        style="left:${(ch-from)*chW + 1}px;width:${Math.max(chW - 3, 4)}px;min-width:${Math.max(4, chW - 4)}px;top:${3 + row*rowStep}px;height:${row === 0 ? Math.min(evH0, laneH - 6) : evH1}px;font-size:${row === 0 ? evFont0 : Math.max(7, evFont0 - 2)}px"
+        title="Ch${ch} · ${escHtml(ev.action || '')}${ev.is_key ? ' ★' : ''}">${escHtml(label)}</div>`;
+    });
 
     html += `</div></div>`;
   });
 
-  // ── 没有事件的线程（空道） ──
-  state.threads.filter(t=>!threadIds.includes(t.id)).forEach(t=>{
-    const color = TYPE_COLORS[t.type]||TYPE_COLORS.default;
-    html += `<div class="lane-row" data-tid="${t.id}">`;
-    html += `<div class="lane-label" style="color:${color};opacity:.4;width:160px">${escHtml(t.name)}</div>`;
-    html += `<div class="lane-track" data-tid="${t.id}" style="width:${totalW}px;flex:none;opacity:.2"></div>`;
-    html += `</div>`;
-  });
-
   html += `</div>`;
   outer.innerHTML = html;
+  applyHighlight();
+
+  // 重绘后恢复详情选中态
+  if (state.selectedIdx != null) {
+    const selEl = outer.querySelector(`.ev[data-idx="${state.selectedIdx}"]`);
+    if (selEl) selEl.classList.add('sel');
+  }
+
+  renderMinimap();
 }
 
 // ═══════════════════════════════════════════════════════
 // 事件详情
 // ═══════════════════════════════════════════════════════
 function showDetail(idx) {
-  if (idx < 0 || idx >= state.timelineFull.length) return;
+  if (!(idx >= 0) || idx >= state.timelineFull.length) return;
   state.selectedIdx = idx;
   const ev = state.timelineFull[idx];
   const cat = catOf(ev);
   const catNames = {position:'位置变化', emotion:'情感转变', info:'信息揭示', conflict:'核心冲突', key:'关键节点', other:'其他事件'};
-  const catColors = {position:'var(--blue)', emotion:'var(--red)', info:'var(--green)', conflict:'var(--orange)', key:'var(--pink)', other:'var(--purple)'};
-  const thread = state.threads.find(t=>t.id===ev.thread_id);
+  const thread = state.threads.find(t => t.id === ev.thread_id);
+  const tColor = thread ? (TYPE_COLORS[thread.type] || TYPE_COLORS.default) : 'var(--text2)';
 
-  // 高亮
-  document.querySelectorAll('.ev').forEach(el=>el.classList.remove('sel'));
-  document.querySelectorAll('.ev').forEach(el=>{
-    if (el.getAttribute('onclick')===`showDetail(${idx})`) el.classList.add('sel');
-  });
+  document.querySelectorAll('.ev').forEach(el => el.classList.toggle('sel', +el.dataset.idx === idx));
 
   let html = '';
-  if (ev.is_key) html += `<div style="background:var(--orange-bg);border:1px solid rgba(240,136,62,.3);border-radius:var(--radius);padding:6px 10px;margin-bottom:12px;font-size:11px;color:var(--orange);font-weight:600">★ 关键叙事节点</div>`;
-  html += field('事件类型', `<span class="df-val colored" style="color:${catColors[cat]}">${catNames[cat]||cat}</span>`);
-  html += field('所属线程', thread ? thread.name : (ev.thread_id||'—'));
-  html += field('章节', `第 ${ev.chapter||'?'} 章`);
-  if (ev.character_id) html += field('相关角色', ev.character_id);
-  if (ev.action) html += field('事件描述', `<div class="df-val" style="line-height:1.6">${escHtml(ev.action)}</div>`);
+  // 概览卡
+  html += `<div class="dt-card">
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:9px;flex-wrap:wrap">
+      <span class="dt-tag" style="background:${cat === 'key' ? 'var(--orange-bg)' : 'var(--surface3)'};color:${cat === 'key' ? 'var(--orange)' : 'var(--text2)'}">${catNames[cat] || cat}</span>
+      ${ev.is_key ? '<span class="dt-tag" style="background:rgba(240,136,62,.16);color:var(--orange)">★ 关键</span>' : ''}
+      <span style="margin-left:auto;font-size:11px;color:var(--text3);font-variant-numeric:tabular-nums">Ch ${ev.chapter || '?'}</span>
+    </div>
+    <div style="font-size:13px;line-height:1.7;color:var(--text)">${escHtml(ev.action || '（无事件描述）')}</div>
+  </div>`;
 
-  // 查找相关因果链
-  const linked = state.causal.filter(c=>c.source_chapter===ev.chapter&&c.source_thread_id===ev.thread_id
-    || c.target_chapter===ev.chapter&&c.target_thread_id===ev.thread_id);
+  // 归属卡
+  html += `<div class="dt-card">
+    <div class="dt-kv"><span style="min-width:34px">线程</span><b style="color:${tColor}">${escHtml(thread ? thread.name : (ev.thread_id || '未归属'))}</b></div>
+    <div class="dt-kv"><span style="min-width:34px">角色</span><b>${escHtml(ev.character_id || '—')}</b></div>
+    <div class="dt-kv"><span style="min-width:34px">地点</span><b>${escHtml(ev.location_id || '—')}</b></div>
+    ${ev.physical_time ? `<div class="dt-kv"><span style="min-width:34px">时间</span><b>${escHtml(ev.physical_time)}</b></div>` : ''}
+  </div>`;
+
+  // 关联因果链
+  const linked = state.causal.filter(c => causalTouches(c, ev));
+  html += `<div class="df-label" style="margin-bottom:5px">关联因果链</div>`;
   if (linked.length) {
-    html += `<div class="df-label" style="margin-top:12px">关联因果链</div>`;
-    linked.forEach(c=>{
-      html += `<div style="font-size:11px;padding:5px 8px;background:var(--surface);border-radius:var(--radius);margin-top:4px;color:var(--text2)">
-        <span style="color:var(--blue)">${c.source_thread_id}</span>
+    linked.forEach(c => {
+      const src = state.threads.find(t => t.id === c.source_thread_id);
+      const tgt = state.threads.find(t => t.id === c.target_thread_id);
+      const chTxt = causalChapterText(c);
+      html += `<div class="dt-chain">
+        <span style="color:var(--blue);font-weight:600">${escHtml(src ? src.name : (c.source_thread_id || '?'))}</span>
         <span style="color:var(--text3)"> → </span>
-        <span style="color:var(--purple)">${c.target_thread_id}</span>
-        <div style="color:var(--text3);margin-top:2px">${escHtml(c.description||'')}</div>
+        <span style="color:var(--purple);font-weight:600">${escHtml(tgt ? tgt.name : (c.target_thread_id || '?'))}</span>
+        ${chTxt ? `<span class="causal-ch" style="margin-left:6px">${chTxt}</span>` : ''}
+        <div style="color:var(--text2);margin-top:3px">${escHtml(c.description || c.cause || c.consequence || '—')}</div>
       </div>`;
     });
+  } else {
+    html += `<div style="font-size:11px;color:var(--text3);padding:9px 11px;background:var(--surface);border-radius:6px">此事件暂未检测到跨线程因果影响。</div>`;
   }
 
   document.getElementById('detail-body').innerHTML = html;
-  document.getElementById('detail-close-btn').style.display='';
-  document.getElementById('detail-ft').style.display='';
+  document.getElementById('detail-close-btn').style.display = '';
+  document.getElementById('detail-ft').style.display = '';
 }
 
-function field(label, val) {
-  return `<div class="df"><div class="df-label">${label}</div><div class="df-val">${val}</div></div>`;
+// 因果链是否与该事件相关（后端不一定提供 source_chapter，缺省时按线程匹配）
+function causalTouches(c, ev) {
+  if (!c || !ev) return false;
+  if (c.target_thread_id === ev.thread_id) {
+    if (c.target_chapter == null || c.target_chapter === ev.chapter) return true;
+  }
+  if (c.source_thread_id === ev.thread_id) {
+    if (c.source_chapter == null || c.source_chapter === ev.chapter) return true;
+  }
+  return false;
+}
+
+function causalChapterText(c) {
+  const s = c.source_chapter, t = c.target_chapter;
+  if (s != null && t != null) return `Ch${s} → Ch${t}`;
+  if (t != null) return `Ch${t}`;
+  if (s != null) return `Ch${s}`;
+  return '';
 }
 
 function closeDetail() {
   state.selectedIdx = null;
-  document.querySelectorAll('.ev').forEach(el=>el.classList.remove('sel'));
+  document.querySelectorAll('.ev').forEach(el => el.classList.remove('sel'));
   document.getElementById('detail-body').innerHTML = '<div class="detail-empty">点击泳道中的<br>事件方块查看详情</div>';
-  document.getElementById('detail-close-btn').style.display='none';
-  document.getElementById('detail-ft').style.display='none';
+  document.getElementById('detail-close-btn').style.display = 'none';
+  document.getElementById('detail-ft').style.display = 'none';
 }
 
 // ═══════════════════════════════════════════════════════
@@ -908,40 +1241,48 @@ function renderBottom() {
 function renderCausal() {
   const el = document.getElementById('bottom-body');
   if (!state.causal.length) {
-    el.innerHTML='<div class="detail-empty" style="padding:20px">暂无跨线程因果链数据</div>'; return;
+    el.innerHTML = '<div class="detail-empty" style="padding:20px">暂无跨线程因果链数据<br><span style="font-size:11px">提取章节后会自动生成跨线因果</span></div>';
+    return;
   }
   el.innerHTML = state.causal.map(c => {
-    const srcT = state.threads.find(t=>t.id===c.source_thread_id);
-    const tgtT = state.threads.find(t=>t.id===c.target_thread_id);
+    const srcT = state.threads.find(t => t.id === c.source_thread_id);
+    const tgtT = state.threads.find(t => t.id === c.target_thread_id);
+    const chTxt = causalChapterText(c);
     return `<div class="causal-row">
       <div class="causal-dot" style="background:var(--blue)"></div>
-      <span style="color:var(--blue);font-weight:600;min-width:64px">${escHtml(srcT?.name||c.source_thread_id)}</span>
-      <span style="color:var(--text3);font-size:12px"> → </span>
-      <span style="color:var(--purple);font-weight:600;min-width:64px">${escHtml(tgtT?.name||c.target_thread_id)}</span>
-      <span style="flex:1;color:var(--text2)">${escHtml(c.description||c.type||'')}</span>
-      ${c.source_chapter?`<span style="color:var(--text3);font-size:10px;white-space:nowrap">Ch${c.source_chapter}${c.target_chapter?'→Ch'+c.target_chapter:''}</span>`:''}
+      <span style="color:var(--blue);font-weight:600;min-width:62px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(srcT ? srcT.name : (c.source_thread_id || '?'))}</span>
+      <span style="color:var(--text3);font-size:12px">→</span>
+      <span style="color:var(--purple);font-weight:600;min-width:62px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(tgtT ? tgtT.name : (c.target_thread_id || '?'))}</span>
+      <span style="flex:1;min-width:160px;color:var(--text2)">${escHtml(c.description || c.cause || c.consequence || '—')}</span>
+      ${chTxt ? `<span class="causal-ch">${chTxt}</span>` : ''}
     </div>`;
   }).join('');
 }
 
 function renderWarnings() {
   const el = document.getElementById('bottom-body');
-  const dormant = state.dormant.length ? state.dormant :
-    state.threads.filter(t=>t.status==='dormant').map(t=>({...t, gap: state.currentChapter - (t.last_active_chapter||0)}));
+  const cur = state.currentChapter || 0;
+  const dormant = (state.dormant && state.dormant.length)
+    ? state.dormant
+    : state.threads.filter(t => t.status === 'dormant')
+        .map(t => ({...t, gap: Math.max(0, cur - (t.last_active_chapter || 0))}));
   if (!dormant.length) {
-    el.innerHTML='<div class="detail-empty" style="padding:20px">✓ 所有线程均活跃，无掉线预警</div>'; return;
+    el.innerHTML = '<div class="detail-empty" style="padding:20px">✓ 所有线程均活跃，无掉线预警</div>';
+    return;
   }
-  el.innerHTML = dormant.map(t => `
-    <div class="warn-row">
+  el.innerHTML = dormant.map(t => {
+    const gap = (t.gap == null) ? Math.max(0, cur - (t.last_active_chapter || 0)) : t.gap;
+    return `<div class="warn-row">
       <div class="warn-badge">休眠</div>
       <div style="flex:1">
-        <strong>${escHtml(t.name||t.id)}</strong>
+        <strong>${escHtml(t.name || t.id)}</strong>
         <span style="color:var(--text3)"> — 已 </span>
-        <span style="color:var(--yellow);font-weight:700">${t.gap||'?'} 章</span>
-        <span style="color:var(--text3)"> 未出现（最后 Ch${t.last_active_chapter||'?'}）</span>
+        <span style="color:var(--yellow);font-weight:700">${gap} 章</span>
+        <span style="color:var(--text3)"> 未出现（最后活跃 Ch${t.last_active_chapter || '?'}）</span>
       </div>
-      <button class="btn btn-sm" onclick="wakeThread('${t.id}')">唤醒</button>
-    </div>`).join('');
+      <button class="btn btn-sm" data-wake="${escAttr(t.id)}" onclick="wakeThread(this.dataset.wake)">唤醒</button>
+    </div>`;
+  }).join('');
 }
 
 function switchTab(tab) {
@@ -956,15 +1297,59 @@ function switchTab(tab) {
 // ═══════════════════════════════════════════════════════
 function setFilter(f, el) {
   state.filter = f;
-  document.querySelectorAll('.chip').forEach(c=>c.classList.remove('on'));
-  el.classList.add('on');
+  localStorage.setItem('tl_filter', f);
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('on'));
+  if (el) el.classList.add('on');
   renderSwimlane();
 }
 
-function setZoom(val) {
-  state.zoom = Math.max(40, Math.min(300, parseInt(val)||100));
+function clampZZoomX(v) {
+  return Math.max(40, Math.min(300, Math.round(parseInt(v, 10) || 100)));
+}
+
+function clampZZoomY(v) {
+  return Math.max(50, Math.min(220, Math.round(parseInt(v, 10) || 100)));
+}
+
+// 横向缩放：影响每章像素宽
+function setZoom(val, silent) {
+  state.zoom = clampZZoomX(val);
   document.getElementById('zoom-input').value = state.zoom;
+  if (!silent) renderSwimlane();
+}
+
+// 纵向缩放：影响泳道高度、事件块高度、行间距
+function setZoomY(val, silent) {
+  state.zoomY = clampZZoomY(val);
+  const el = document.getElementById('zoomy-input');
+  if (el) el.value = state.zoomY;
+  if (!silent) renderSwimlane();
+}
+
+function resetZoom() {
+  setZoom(100, true);
+  setZoomY(100, true);
   renderSwimlane();
+  const outer = document.getElementById('swimlane-outer');
+  if (outer) { outer.scrollLeft = 0; outer.scrollTop = 0; }
+}
+
+// 适应窗口：算出刚好铺满可视宽度的横向缩放，纵向恢复 100%
+function fitToWindow() {
+  const outer = document.getElementById('swimlane-outer');
+  if (!outer || !outer.clientWidth) return;
+  const from = state.rangeFrom || 1;
+  const to = Math.max(from, state.rangeTo || getMaxChapter());
+  const span = Math.max(1, to - from + 1);
+  const avail = Math.max(240, outer.clientWidth - 176 - 28);
+  const base = chapterBaseWidth(span);
+  let z = Math.round((avail / span) / base * 100);
+  z = clampZZoomX(z);
+  setZoom(z, true);
+  setZoomY(100, true);
+  renderSwimlane();
+  outer.scrollLeft = 0;
+  outer.scrollTop = 0;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1025,69 +1410,82 @@ async function wakeThread(tid) {
 // 章节选择 + 提取数据
 // ═══════════════════════════════════════════════════════
 function populateChapterSelect(maxCh) {
-  const sel=document.getElementById('ch-sel');
-  sel.innerHTML='<option value="">提取章节</option>';
-  for(let i=1;i<=maxCh;i++){
-    const opt=document.createElement('option');
-    opt.value=i; opt.textContent=`第${i}章`;
+  const sel = document.getElementById('ch-sel');
+  const extracted = new Set();
+  Object.values(state.threadChapterMap || {}).forEach(list => (list || []).forEach(c => extracted.add(c)));
+
+  sel.innerHTML = '<option value="">提取章节</option>';
+  for (let i = 1; i <= maxCh; i++) {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = `第${i}章${extracted.has(i) ? ' ✓' : ''}`;
     sel.appendChild(opt);
   }
-  if(maxCh>0) sel.value=maxCh;
+  if (maxCh > 0) sel.value = maxCh;
+  sel.title = extracted.size
+    ? `已提取 ${extracted.size} 章（带 ✓ 标记，重复提取会覆盖该章旧事件）`
+    : '选择要提取时间线数据的章节';
 }
 
-async function extractData() {
-  const ch=parseInt(document.getElementById('ch-sel').value);
-  if(!ch){alert('请先选择章节');return;}
-  if(state.bookId==='demo'){alert('演示模式无需提取，数据已内嵌。');return;}
-  if(!confirm(`将从第 ${ch} 章正文提取时间线数据，约需30秒，继续？`)) return;
+async function extractData(btn) {
+  const ch = parseInt(document.getElementById('ch-sel').value, 10);
+  if (!ch) { alert('请先在右上角选择章节'); return; }
+  if (state.bookId === 'demo') { alert('演示模式使用内嵌数据，无需提取。\n选择一本真实书籍后即可提取。'); return; }
+  if (!confirm(`将从第 ${ch} 章正文提取时间线数据，约需 30 秒，继续？`)) return;
+
+  if (btn) { btn.disabled = true; btn.textContent = '提取中…'; }
   try {
-    const resp=await fetch(`/api/books/${state.bookId}/extract-story-state`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chapter:ch})});
-    const data=await resp.json();
-    if(data.ok){alert(`提取成功！\n${data.summary}\n（已自动识别章节主要角色并分配到对应线程）`);loadBook(state.bookId);}
-    else alert('提取失败：'+(data.error||'未知错误'));
-  } catch(e){alert('请求失败：'+e.message);}
+    const resp = await fetch(`/api/books/${encodeURIComponent(state.bookId)}/extract-story-state`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({chapter: ch}),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      alert(`提取成功！\n${data.summary || ''}\n（已自动识别章节主要角色并分配到对应线程）`);
+      await loadBook(state.bookId);
+    } else {
+      alert('提取失败：' + (data.error || data.detail || '未知错误'));
+    }
+  } catch(e) {
+    alert('请求失败：' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⚡ 提取'; }
+  }
 }
 
 // ═══════════════════════════════════════════════════════
 // 章节范围控制
 // ═══════════════════════════════════════════════════════
-function setRange() {
-  let from = parseInt(document.getElementById('range-from').value) || 1;
-  let to = parseInt(document.getElementById('range-to').value) || 9999;
-  const maxCh = Math.max(1, ...state.timelineFull.map(e=>e.chapter||1));
-  from = Math.max(1, Math.min(from, maxCh));
-  to = Math.max(from, Math.min(to, maxCh));
+function commitRange(from, to, withThreadList = true) {
+  const maxCh = getMaxChapter();
+  from = Math.max(1, Math.min(parseInt(from, 10) || 1, maxCh));
+  to = Math.max(from, Math.min(parseInt(to, 10) || maxCh, maxCh));
   state.rangeFrom = from;
   state.rangeTo = to;
-  document.getElementById('range-from').value = from;
-  document.getElementById('range-to').value = to;
+
+  const fromEl = document.getElementById('range-from');
+  const toEl = document.getElementById('range-to');
+  if (fromEl) { fromEl.max = maxCh; fromEl.value = from; }
+  if (toEl) { toEl.max = maxCh; toEl.value = to; }
+
+  localStorage.setItem('tl_range', `${from}-${to}`);
   applyRangeFilter();
   renderSwimlane();
-  renderThreadList();
+  if (withThreadList) renderThreadList();
+}
+
+function setRange() {
+  commitRange(document.getElementById('range-from').value, document.getElementById('range-to').value);
 }
 
 function setRangeAll() {
-  const maxCh = Math.max(1, ...state.timelineFull.map(e=>e.chapter||1));
-  state.rangeFrom = 1;
-  state.rangeTo = maxCh;
-  document.getElementById('range-from').value = 1;
-  document.getElementById('range-to').value = maxCh;
-  applyRangeFilter();
-  renderSwimlane();
-  renderThreadList();
+  commitRange(1, getMaxChapter());
 }
 
 function setRangeAround() {
-  const ch = state.currentChapter || Math.max(1, ...state.timelineFull.map(e=>e.chapter||1));
-  const from = Math.max(1, ch - 30);
-  const to = ch + 30;
-  state.rangeFrom = from;
-  state.rangeTo = to;
-  document.getElementById('range-from').value = from;
-  document.getElementById('range-to').value = to;
-  applyRangeFilter();
-  renderSwimlane();
-  renderThreadList();
+  const ch = state.currentChapter || getMaxChapter();
+  commitRange(Math.max(1, ch - 30), ch + 30);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1095,50 +1493,48 @@ function setRangeAround() {
 // ═══════════════════════════════════════════════════════
 function renderMinimap() {
   const mm = document.getElementById('minimap');
-  if (!mm || !state.timelineFull.length) return;
+  const vp = document.getElementById('minimap-vp');
+  const now = document.getElementById('minimap-now');
+  if (!mm || !vp || !now) return;
 
-  const maxCh = Math.max(1, ...state.timelineFull.map(e=>e.chapter||1));
-  const from = state.rangeFrom || 1;
-  const to = state.rangeTo || maxCh;
+  const maxCh = getMaxChapter();
   const mmW = mm.clientWidth || 600;
 
   // 清除旧的热力点（保留 viewport 和 now）
-  mm.querySelectorAll('.minimap-dot').forEach(d=>d.remove());
+  mm.querySelectorAll('.minimap-dot').forEach(d => d.remove());
 
   // 按章节统计事件密度
   const density = {};
   state.timelineFull.forEach(ev => {
     const ch = ev.chapter || 1;
-    density[ch] = (density[ch]||0) + 1;
+    density[ch] = (density[ch] || 0) + 1;
   });
   const maxDensity = Math.max(1, ...Object.values(density));
+  const keyChapters = new Set(state.timelineFull.filter(e => e.is_key).map(e => e.chapter || 1));
 
-  // 绘制热力点
   Object.entries(density).forEach(([ch, count]) => {
-    const c = parseInt(ch);
-    const x = ((c - 1) / maxCh) * mmW;
-    const opacity = 0.2 + 0.8 * (count / maxDensity);
-    const ev = state.timelineFull.find(e => (e.chapter||1) === c);
-    const isKey = state.timelineFull.some(e => (e.chapter||1) === c && e.is_key);
+    const c = parseInt(ch, 10);
+    const isKey = keyChapters.has(c);
     const dot = document.createElement('div');
-    dot.className = `minimap-dot${isKey ? ' key-dot' : ''}`;
-    dot.style.left = x + 'px';
+    dot.className = 'minimap-dot' + (isKey ? ' key-dot' : '');
+    dot.style.left = Math.min(mmW - 3, ((c - 1) / maxCh) * mmW) + 'px';
     dot.style.background = isKey ? 'var(--orange)' : 'var(--blue)';
-    dot.style.opacity = opacity;
+    dot.style.opacity = (0.25 + 0.75 * (count / maxDensity)).toFixed(2);
     mm.appendChild(dot);
   });
 
-  // 视口选择框
-  const vp = document.getElementById('minimap-vp');
+  // 视口选择框（限制在轨道内，避免溢出）
+  const from = Math.max(1, state.rangeFrom || 1);
+  const to = Math.min(maxCh, state.rangeTo || maxCh);
   const vpLeft = ((from - 1) / maxCh) * mmW;
-  const vpRight = (to / maxCh) * mmW;
-  vp.style.left = vpLeft + 'px';
-  vp.style.width = Math.max(8, vpRight - vpLeft) + 'px';
+  const vpWidth = ((to - from + 1) / maxCh) * mmW;
+  vp.style.left = Math.min(vpLeft, Math.max(0, mmW - 8)) + 'px';
+  vp.style.width = Math.max(8, Math.min(vpWidth, mmW)) + 'px';
+  vp.style.display = (from === 1 && to === maxCh) ? 'none' : '';
 
   // 当前章节线
-  const now = document.getElementById('minimap-now');
   if (state.currentChapter > 0) {
-    now.style.left = ((state.currentChapter - 1) / maxCh) * mmW + 'px';
+    now.style.left = Math.min(mmW - 1, ((state.currentChapter - 1) / maxCh) * mmW) + 'px';
     now.style.display = '';
   } else {
     now.style.display = 'none';
@@ -1146,49 +1542,87 @@ function renderMinimap() {
 }
 
 let _mmDragging = false;
+let _mmRaf = 0;
+let _mmLastEvent = null;
+
 function minimapDrag(e) {
-  const mm = document.getElementById('minimap');
-  const maxCh = Math.max(1, ...state.timelineFull.map(ev=>ev.chapter||1));
-  const mmW = mm.clientWidth || 600;
-  const range = state.rangeTo - state.rangeFrom + 1;
-
-  function update(e) {
-    const rect = mm.getBoundingClientRect();
-    const x = Math.max(0, Math.min(e.clientX - rect.left, mmW));
-    const ch = Math.round((x / mmW) * maxCh) + 1;
-    let from = Math.max(1, ch - Math.floor(range / 2));
-    let to = from + range - 1;
-    if (to > maxCh) { to = maxCh; from = Math.max(1, to - range + 1); }
-    state.rangeFrom = from;
-    state.rangeTo = to;
-    document.getElementById('range-from').value = from;
-    document.getElementById('range-to').value = to;
-    applyRangeFilter();
-    renderSwimlane();
-    renderThreadList();
-  }
-
   if (e.type === 'mousedown') {
     _mmDragging = true;
-    update(e);
-    const onMove = ev => { if (_mmDragging) update(ev); };
-    const onUp = () => { _mmDragging = false; document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+    scheduleMinimapDrag(e);
+    const onMove = ev => { if (_mmDragging) scheduleMinimapDrag(ev); };
+    const onUp = () => {
+      _mmDragging = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      renderThreadList();
+    };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
+  } else if (_mmDragging) {
+    scheduleMinimapDrag(e);
   }
+}
+
+// 拖动时按帧合并重绘，避免每次 mousemove 都重建整张泳道图
+function scheduleMinimapDrag(e) {
+  _mmLastEvent = e;
+  if (_mmRaf) return;
+  _mmRaf = requestAnimationFrame(() => {
+    _mmRaf = 0;
+    if (_mmLastEvent) applyMinimapDrag(_mmLastEvent);
+  });
+}
+
+function applyMinimapDrag(e) {
+  const mm = document.getElementById('minimap');
+  if (!mm) return;
+  const maxCh = getMaxChapter();
+  const mmW = mm.clientWidth || 600;
+  const span = Math.max(1, (state.rangeTo || maxCh) - (state.rangeFrom || 1) + 1);
+  const rect = mm.getBoundingClientRect();
+  const x = Math.max(0, Math.min(e.clientX - rect.left, mmW));
+  const ch = Math.round((x / mmW) * maxCh) + 1;
+
+  let from = Math.max(1, ch - Math.floor(span / 2));
+  let to = from + span - 1;
+  if (to > maxCh) { to = maxCh; from = Math.max(1, to - span + 1); }
+
+  state.rangeFrom = from;
+  state.rangeTo = to;
+  const fromEl = document.getElementById('range-from');
+  const toEl = document.getElementById('range-to');
+  if (fromEl) fromEl.value = from;
+  if (toEl) toEl.value = to;
+  applyRangeFilter();
+  renderSwimlane();   // 内部会刷新 minimap
 }
 
 // ═══════════════════════════════════════════════════════
 // 工具函数
 // ═══════════════════════════════════════════════════════
-function escHtml(s='') {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function escHtml(s = '') {
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function escAttr(s = '') {
+  return escHtml(s).replace(/'/g, '&#39;');
+}
+
+function cssEsc(s = '') {
+  const str = String(s == null ? '' : s);
+  if (window.CSS && typeof CSS.escape === 'function') return CSS.escape(str);
+  return str.replace(/["\\]/g, '\\$&');
 }
 
 // ═══════════════════════════════════════════════════════
 // 启动
 // ═══════════════════════════════════════════════════════
-init();
+init().catch(err => {
+  console.error(err);
+  const outer = document.getElementById('swimlane-outer');
+  if (outer) outer.innerHTML = `<div class="empty"><div class="empty-icon">!</div><div class="empty-title">初始化失败</div><div class="empty-desc">${escHtml(err && err.message)}</div></div>`;
+});
 </script>
 </body>
 </html>

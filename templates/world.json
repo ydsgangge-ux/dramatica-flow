@@ -1,5 +1,6 @@
 {
-  "_comment": "世界定义文件 — 填写后运行 df setup world <book_id> 加载",
+  "_comment": "世界定义文件 — background 为背景故事（Markdown，## 分段，供细纲按段引用）；locations/factions/world_rules 为结构化设定。填写后运行 df setup world <book_id> 加载",
+  "background": "## 一句话世界观\n一句话说清这个世界的核心矛盾。\n\n## 纪元与历史\n至少两个影响至今的历史事件（旧战争、灾变、王朝更替等）。\n\n## 地理与势力格局\n各地区的资源与各势力的核心利益、彼此恩怨。\n\n## 力量与规则体系\n力量来源、代价与禁忌（哪些是绝对不能违反的硬规则）。\n\n## 社会文化与日常\n普通人的生活方式、禁忌与节庆。\n\n## 本书故事的切入点\n主角为什么在此刻被卷入。",
   "locations": [
     {
       "id": "loc_arena",

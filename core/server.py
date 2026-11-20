@@ -12,6 +12,7 @@ import re
 import subprocess
 import os
 import shutil
+from contextvars import ContextVar
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Literal
@@ -25,7 +26,7 @@ except ImportError:
 try:
     from fastapi import FastAPI, HTTPException, Form, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse
+    from fastapi.responses import FileResponse, StreamingResponse
 except ImportError:
     _MISSING.append("fastapi")
 try:
@@ -243,6 +244,107 @@ def _write_chapter_summary(sm, chapter: int, title: str, summary: str) -> None:
     sm.upsert_chapter_summary(chapter, block)
 
 
+def _read_world_json(sm) -> dict:
+    """读取 setup/world.json（世界设定 + 背景故事），失败时返回空字典"""
+    path = sm.book_dir / "setup" / "world.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _normalize_world_data(data: dict) -> dict:
+    """兼容外部大模型 / 旧模板与内部字段的键名差异。
+
+    - rules → world_rules：导入模板和提取提示词用的是 rules，而加载器只认 world_rules
+    - impact → consequence：规则违反后果
+    - significance → dramatic_potential：地点的戏剧作用
+    不转换的话，这些字段会被静默丢弃，看起来“导入了但没生效”。
+    """
+    if not isinstance(data, dict):
+        return data
+
+    if not data.get("world_rules") and isinstance(data.get("rules"), list):
+        data["world_rules"] = data.pop("rules")
+
+    rules = data.get("world_rules")
+    if isinstance(rules, list):
+        for rule in rules:
+            if isinstance(rule, dict) and not rule.get("consequence") and rule.get("impact"):
+                rule["consequence"] = rule["impact"]
+
+    locations = data.get("locations")
+    if isinstance(locations, list):
+        for loc in locations:
+            if isinstance(loc, dict) and not loc.get("dramatic_potential") and loc.get("significance"):
+                loc["dramatic_potential"] = loc["significance"]
+
+    if isinstance(data.get("background"), str):
+        data["background"] = data["background"].strip()
+
+    return data
+
+
+def _world_background(sm) -> str:
+    """世界背景故事（兼容 background / world_background / history 三种键）"""
+    data = _read_world_json(sm)
+    for key in ("background", "world_background", "history"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+_BACKGROUND_HEADING_RE = re.compile(r"^#{2,3}\s+(.+?)\s*$")
+
+
+def _split_background_sections(text: str) -> list[dict]:
+    """按 ## / ### 标题把背景故事拆成可勾选的段落"""
+    if not text.strip():
+        return []
+    sections: list[dict] = []
+    title = "概述"
+    buf: list[str] = []
+
+    def flush() -> None:
+        body = "\n".join(buf).strip()
+        if body:
+            sections.append({"title": title, "content": body})
+
+    for line in text.splitlines():
+        if re.match(r"^#\s+", line):  # 文档大标题不参与分段
+            continue
+        m = _BACKGROUND_HEADING_RE.match(line)
+        if m:
+            flush()
+            title = m.group(1).strip()
+            buf = []
+        else:
+            buf.append(line)
+    flush()
+    return sections
+
+
+def _select_background(sm, refs: list[str] | None = None) -> tuple[str, list[str]]:
+    """取出细纲要引用的背景段落；未指定时默认第一节（核心基调）"""
+    text = _world_background(sm)
+    if not text:
+        return "", []
+    sections = _split_background_sections(text)
+    if not sections:
+        return text[:1000], []
+    if refs:
+        wanted = set(refs)
+        picked = [s for s in sections if s["title"] in wanted]
+        if picked:
+            return "\n\n".join(f"### {s['title']}\n{s['content']}" for s in picked), [s["title"] for s in picked]
+    first = sections[0]
+    return f"### {first['title']}\n{first['content']}", [first["title"]]
+
+
 def _build_settlement(sm, chapter: int):
     """从已提取的世界状态重建「写后结算表」，供审计员与正文交叉验证"""
     from core.agents import PostWriteSettlement
@@ -291,6 +393,9 @@ def _build_settlement(sm, chapter: int):
 async def _regenerate_chapter_summary(llm, sm, chapter: int, content: str, title: str = "") -> str:
     """用最新正文重新生成章节摘要并按章覆盖写入（供生成正文 / 手动编辑复用）"""
     from core.llm import LLMMessage
+
+    # 摘要属于内部后续调用，不要把 token 混进正文的流式预览
+    _STREAM_CB.set(None)
 
     title = (title or "").strip() or _chapter_title(sm, chapter)
     prompt = f"""请为以下小说章节生成一份简明摘要（200-300字），包含：
@@ -383,6 +488,10 @@ def _create_llm(temperature: float | None = None, model_env: str = "DEEPSEEK_MOD
     return _RetryLLMWrap(create_provider(cfg))
 
 
+# 流式输出回调：由 /stream 端点设置，_RetryLLMWrap 检测到后改用 stream 逐字下发
+_STREAM_CB: ContextVar = ContextVar("llm_stream_cb", default=None)
+
+
 class _RetryLLMWrap:
     """给 LLM provider 的 complete 包一层排队/断线智能重试。
     仅用于 server 端业务端点；CLI 管线(create_provider)与连接测试不受影响，避免双重重试。
@@ -391,6 +500,10 @@ class _RetryLLMWrap:
         self._llm = llm
 
     def complete(self, messages):
+        cb = _STREAM_CB.get()
+        if cb is not None:
+            # 流式模式下不做整段重试（已下发的 token 无法回滚），失败由前端提示用户重试
+            return self._llm.stream(messages, cb)
         from core.llm import with_retry
         return with_retry(
             lambda: self._llm.complete(messages),
@@ -437,6 +550,16 @@ class AiGenerateSetupReq(BaseModel):
     book_title: str
     idea: str = ""
     style: str = "standard"  # standard / detailed / minimalist
+    background: str = ""    # 世界背景故事（不传则读 setup/world.json）
+
+class BackgroundReq(BaseModel):
+    background: str = ""
+
+class AiBackgroundReq(BaseModel):
+    genre: str = ""
+    book_title: str = ""
+    idea: str = ""
+    style: str = "standard"  # standard / detailed
 
 class SaveOutlineReq(BaseModel):
     outline: dict  # 完整大纲 JSON
@@ -746,6 +869,8 @@ def setup_save(book_id: str, file_type: str, req: SaveSetupReq):
     # 结构校验：避免空壳或字段错位被直接保存，导致后续 setup load 失败
     if not isinstance(data, dict):
         raise HTTPException(400, "顶层必须是 JSON 对象")
+    if file_type == "world":
+        data = _normalize_world_data(data)
     if file_type == "characters":
         chars = data.get("characters")
         if not isinstance(chars, list):
@@ -759,6 +884,8 @@ def setup_save(book_id: str, file_type: str, req: SaveSetupReq):
         for key in ("factions", "world_rules"):
             if key in data and not isinstance(data[key], list):
                 raise HTTPException(400, f"world.json 的 {key} 必须是数组")
+        if "background" in data and not isinstance(data["background"], str):
+            raise HTTPException(400, "world.json 的 background 必须是字符串（Markdown）")
     elif file_type == "events":
         if not isinstance(data.get("events"), list):
             raise HTTPException(400, "events.json 必须有 events 数组")
@@ -788,6 +915,86 @@ def setup_load(book_id: str):
     except Exception as e:
         raise HTTPException(500, f"加载失败：{e}")
 
+
+
+# ── 背景故事（世界观的第一层：先有背景，再生成角色/世界/事件） ────────────────
+
+@app.get("/api/books/{book_id}/background")
+def get_background(book_id: str):
+    """读取背景故事，并按标题返回可勾选的分段"""
+    sm = _sm(book_id)
+    text = _world_background(sm)
+    return {
+        "ok": True,
+        "background": text,
+        "sections": _split_background_sections(text),
+        "has_background": bool(text),
+    }
+
+
+@app.put("/api/books/{book_id}/background")
+def save_background(book_id: str, req: BackgroundReq):
+    """保存背景故事：只更新 world.json 的 background 字段，不动地点/势力/规则"""
+    sm = _sm(book_id)
+    setup_dir = sm.book_dir / "setup"
+    setup_dir.mkdir(parents=True, exist_ok=True)
+    path = setup_dir / "world.json"
+    data = _read_world_json(sm)
+    if not data:
+        data = {"locations": [], "factions": [], "world_rules": []}
+    data["background"] = req.background.strip()
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"ok": True, "chars": len(data["background"])}
+
+
+@app.post("/api/books/{book_id}/ai-generate/background")
+async def ai_generate_background(book_id: str, req: AiBackgroundReq):
+    """AI 生成世界背景故事（分好标题，便于后续细纲按段引用）"""
+    _load_env()
+    from core.llm import LLMMessage
+
+    sm = _sm(book_id)
+    cfg = sm.read_config()
+    try:
+        llm = _create_llm(temperature=0.8)
+    except Exception as e:
+        raise HTTPException(400, f"LLM 创建失败：{e}")
+
+    detail = "800-1500 字，信息密度高" if req.style == "detailed" else "600-1000 字，简洁"
+    prompt = f"""你是资深网文世界观设计师。请为下面这本小说写一份「世界背景故事」，作为角色、势力、事件设计的源头。
+
+## 小说信息
+- 书名：{req.book_title or cfg.get('title', '')}
+- 题材：{req.genre or cfg.get('genre', '')}
+- 用户想法：{req.idea or '（请自行构思一个有吸引力的世界背景）'}
+
+## 输出要求
+- 只输出 Markdown 正文，不要 JSON、不要解释
+- 必须使用以下二级标题（保持顺序，每节 {detail}）：
+## 一句话世界观
+## 纪元与历史
+## 地理与势力格局
+## 力量与规则体系
+## 社会文化与日常
+## 本书故事的切入点
+- 「纪元与历史」必须包含至少 2 个影响至今的历史事件（旧战争、灾变、王朝更替等）
+- 「地理与势力格局」要说明各势力的核心利益与彼此恩怨
+- 「力量与规则体系」要写清代价与禁忌（后续会成为硬规则）
+- 「本书故事的切入点」说明主角为何在此刻被卷入
+- 不要写具体角色名，角色留给下一步生成"""
+
+    try:
+        resp = await asyncio.to_thread(
+            llm.complete,
+            [LLMMessage("system", "你是资深网文世界观设计师，只输出 Markdown 正文。"),
+             LLMMessage("user", prompt)],
+        )
+        text = (resp.content or "").strip()
+        if not text:
+            return {"ok": False, "error": "AI 未返回内容"}
+        return {"ok": True, "background": text}
+    except Exception as e:
+        raise HTTPException(500, f"AI 生成失败：{e}")
 
 
 # ── /api/books/{book_id}/chapters ────────────────────────────────────────────
@@ -1181,13 +1388,36 @@ def get_thread_status(book_id: str):
     """获取线程状态报告（含掉线预警和时间轴）"""
     sm = _sm(book_id)
     ws = sm.read_world_state()
+    cur = ws.current_chapter or 0
+
+    # 掉线预警：补充 gap（距上次活跃的章节数），前端直接展示
+    dormant = []
+    for t in ws.dormant_threads(cur, threshold=5):
+        item = _dc_to_dict(t)
+        item["gap"] = max(0, cur - (t.last_active_chapter or 0))
+        dormant.append(item)
+
+    # 跨线因果：补成「源 → 目标」形态（CausalLink 只存 thread_id / source_thread_id）
+    links = []
+    for cl in sm.get_cross_thread_causal_links():
+        links.append({
+            "id": getattr(cl, "id", ""),
+            "source_thread_id": cl.source_thread_id or cl.thread_id,
+            "target_thread_id": cl.thread_id,
+            "source_chapter": None,
+            "target_chapter": getattr(cl, "chapter", None),
+            "description": cl.event or cl.consequence or cl.cause,
+            "cause": cl.cause,
+            "consequence": cl.consequence,
+        })
+
     return {
-        "current_chapter": ws.current_chapter,
+        "current_chapter": cur,
         "threads": _dc_to_dict(ws.threads),
-        "dormant": _dc_to_dict(ws.dormant_threads(ws.current_chapter, threshold=5)),
+        "dormant": dormant,
         "timeline": _dc_to_dict(ws.timeline[-30:]),
         "thread_chapter_map": ws.thread_chapter_map(),
-        "cross_thread_causal_links": _dc_to_dict(sm.get_cross_thread_causal_links()),
+        "cross_thread_causal_links": links,
     }
 
 
@@ -1814,12 +2044,20 @@ async def ai_generate_arc_events(book_id: str, req: AiGenEventsReq):
         except Exception:
             pass
 
+    # 背景故事只在「事件源头」注入：后续卷的事件同样必须与背景一致
+    background = _world_background(sm)
+    background_block = (
+        f"## 世界背景（历史/格局/规则，事件必须与其一致）\n{background[:1500]}\n"
+        if background else ""
+    )
+
     prompt = f"""你是一位专业的网文策划编辑。现在需要为一个新篇章生成事件列表。
 
 ## 小说信息
 - 书名：{cfg.get('title', '')}
 - 题材：{cfg.get('genre', '')}
 
+{background_block}
 ## 已有事件（前文已发生的事）
 {existing_events_summary or '暂无'}
 
@@ -1840,6 +2078,7 @@ async def ai_generate_arc_events(book_id: str, req: AiGenEventsReq):
 2. 与前文已有事件自然衔接
 3. 包含铺垫、冲突、高潮、转折等不同功能的事件
 4. 每个事件用一句话描述核心冲突或变化
+5. 若提供了世界背景，事件必须与背景中的历史、势力恩怨、规则禁忌保持一致，不得凭空引入与背景冲突的设定
 
 请严格按以下 JSON 格式输出（直接输出 JSON，不要任何说明）：
 ```json
@@ -2394,13 +2633,25 @@ def get_book_config(book_id: str):
 
 @app.post("/api/books/{book_id}/ai-generate/setup")
 async def ai_generate_setup(book_id: str, req: AiGenerateSetupReq):
-    """AI 根据题材和想法生成完整世界观 JSON"""
+    """AI 根据题材、想法与背景故事生成完整世界观 JSON"""
     _load_env()
     from core.llm import LLMMessage
     try:
         llm = _create_llm(temperature=0.8)
     except Exception as e:
         raise HTTPException(400, f"LLM 创建失败：{e}")
+
+    sm = _sm(book_id)
+    background = (req.background or "").strip() or _world_background(sm)
+    background_block = (
+        f"## 世界背景（已确定，不得违背）\n{background[:3000]}\n\n"
+        "角色、势力、地点与事件都必须从上述背景中生长出来：\n"
+        "- 角色的动机要在背景中找到依据\n"
+        "- 势力的立场与恩怨要对应背景中的历史\n"
+        "- 事件必须是背景历史的下游（旧战争、灾变、规则成因等）\n"
+        if background else
+        "## 世界背景\n（用户未提供背景故事，请自行构思一套自洽的历史与格局，并让角色与事件都从其中生长）\n"
+    )
 
     prompt = f"""\
 你是一位资深的网文世界观设计师。请为以下小说生成完整的世界观配置 JSON。
@@ -2411,6 +2662,7 @@ async def ai_generate_setup(book_id: str, req: AiGenerateSetupReq):
 - 核心想法：{req.idea or '（请自行构思一个有吸引力的核心设定）'}
 - 详细程度：{'详细' if req.style == 'detailed' else '精简' if req.style == 'minimalist' else '标准'}
 
+{background_block}
 请严格按以下 JSON 结构输出（直接输出 JSON，不要任何说明）：
 
 ```json
@@ -2447,11 +2699,12 @@ async def ai_generate_setup(book_id: str, req: AiGenerateSetupReq):
         "stance": "对主角的态度"
       }}
     ],
-    "rules": [
+    "world_rules": [
       {{
         "name": "规则名称",
         "description": "这个世界特有的规则/设定",
-        "impact": "对故事的影响"
+        "consequence": "违反/触及规则的后果",
+        "is_hard": true
       }}
     ]
   }},
@@ -2475,7 +2728,8 @@ async def ai_generate_setup(book_id: str, req: AiGenerateSetupReq):
 3. 设计 2-4 个势力
 4. 设计 2-5 个世界规则
 5. 设计 5-10 个种子事件，覆盖三幕结构的关键节点
-6. 事件必须按剧情发展顺序排列"""
+6. 事件必须按剧情发展顺序排列
+7. 若提供了世界背景，每个事件的 description 必须能对应到背景中的某段历史/势力恩怨/规则成因"""
 
     try:
         resp = await asyncio.to_thread(
@@ -2546,12 +2800,13 @@ async def extract_from_novel(book_id: str, req: ExtractFromNovelReq):
     }}
   ],
   "world": {{
+    "background": "## 一句话世界观\\n……\\n\\n## 纪元与历史\\n……\\n\\n## 地理与势力格局\\n……\\n\\n## 力量与规则体系\\n……\\n\\n## 社会文化与日常\\n……\\n\\n## 本书故事的切入点\\n……",
     "locations": [
       {{
         "id": "loc_001",
         "name": "地点名称",
         "description": "从文本推断的地点描述",
-        "significance": "在故事中的意义"
+        "dramatic_potential": "在故事中的戏剧作用"
       }}
     ],
     "factions": [
@@ -2562,11 +2817,12 @@ async def extract_from_novel(book_id: str, req: ExtractFromNovelReq):
         "stance": "对主角的态度"
       }}
     ],
-    "rules": [
+    "world_rules": [
       {{
         "name": "规则名称",
         "description": "从文本推断的世界特有规则/设定",
-        "impact": "对故事的影响"
+        "consequence": "违反规则的后果",
+        "is_hard": true
       }}
     ]
   }},
@@ -2587,11 +2843,14 @@ async def extract_from_novel(book_id: str, req: ExtractFromNovelReq):
 分析要求：
 1. 仔细阅读文本，提取所有出现的角色（有名字的、有台词的、有行动的）
 2. 根据角色在文本中的行为、对话和他人评价推断其性格、目标和渴望
-3. 提取文本中提到的所有地点、势力组织和世界规则
-4. 将关键情节转化为事件，标注其戏剧功能
-5. 如果文本信息不足以推断某个字段，请根据上下文合理推测并标注
-6. 角色数量不限，尽可能完整提取
-7. id 格式：char_001, char_002... / loc_001, loc_002... / fac_001, fac_002... / evt_001, evt_002..."""
+3. 提取文本中提到的所有地点、势力组织和世界规则（规则写在 world_rules 中）
+4. 额外提取 world.background：用 Markdown 二级标题概括世界背景，必须包含
+   「## 一句话世界观」「## 纪元与历史」「## 地理与势力格局」「## 力量与规则体系」
+   「## 社会文化与日常」「## 本书故事的切入点」，每节 100-200 字，内容必须来自文本
+5. 将关键情节转化为事件，标注其戏剧功能
+6. 如果文本信息不足以推断某个字段，请根据上下文合理推测并标注
+7. 角色数量不限，尽可能完整提取
+8. id 格式：char_001, char_002... / loc_001, loc_002... / fac_001, fac_002... / evt_001, evt_002..."""
 
     try:
         resp = await asyncio.to_thread(
@@ -2626,6 +2885,8 @@ class ExtractStoryStateReq(BaseModel):
 async def extract_story_state(book_id: str, req: ExtractStoryStateReq):
     """从已有章节正文提取故事状态数据（时间线事件、情感、关系、伏笔、因果链）"""
     _load_env()
+    # 结构化提取是内部后续调用，不参与正文流式预览
+    _STREAM_CB.set(None)
     sm = _sm(book_id)
     content = _latest_chapter_text(sm, req.chapter)
     if not content:
@@ -2639,6 +2900,7 @@ async def extract_story_state(book_id: str, req: ExtractStoryStateReq):
     from core.llm import LLMMessage
     from core.state import StateManager
     from core.types.state import EmotionalSnapshot, CausalLink, AffectedDecision, Hook, HookType, HookStatus, RelationshipRecord, KnownInfoRecord
+    from core.types.narrative import TimelineEvent
 
     # 截断避免超token
     content_for_llm = content[:8000] + ("\n\n...（截断）" if len(content) > 8000 else "")
@@ -2981,21 +3243,22 @@ async def extract_story_state(book_id: str, req: ExtractStoryStateReq):
             continue
         counter += 1
         raw_char = ke.get("character") or ke.get("character_id", "")
-        event = {
-            "id": f"te_{uuid.uuid4().hex[:8]}",
-            "chapter": req.chapter,
-            "physical_time": "",
-            "time_order": time_order + counter * 0.1,
-            "character_id": _cid(raw_char),
-            "location_id": "",
-            "action": ke.get("action", ""),
-            "type": ke.get("type", "other"),
-            "is_key": ke.get("type") == "key",
-            "thread_id": _resolve_thread_id(raw_char),
-        }
+        ev_type = str(ke.get("type") or "other")
+        event = TimelineEvent(
+            id=f"te_{uuid.uuid4().hex[:8]}",
+            chapter=req.chapter,
+            physical_time="",
+            time_order=time_order + counter * 0.1,
+            character_id=_cid(raw_char),
+            location_id="",
+            action=ke.get("action", ""),
+            type=ev_type,
+            is_key=(ev_type == "key"),
+            thread_id=_resolve_thread_id(raw_char),
+        )
         ws.timeline.append(event)
         # 同步更新事件所属线程的 last_active_chapter
-        tid = event["thread_id"]
+        tid = event.thread_id
         if tid:
             for t in ws.threads:
                 if t.id == tid and req.chapter > t.last_active_chapter:
@@ -3083,6 +3346,7 @@ async def extract_story_state_batch(book_id: str):
 
     from core.llm import LLMMessage
     from core.types.state import EmotionalSnapshot, CausalLink, Hook, HookType, HookStatus, RelationshipRecord, KnownInfoRecord
+    from core.types.narrative import TimelineEvent
     import uuid as _uuid
 
     # 加载角色列表（所有章节共用），并建立角色名 → ID 映射
@@ -3368,17 +3632,19 @@ async def extract_story_state_batch(book_id: str):
                     continue
                 counter += 1
                 ke_char = ke.get("character") or ke.get("character_id", "")
-                event = {
-                    "id": f"te_{_uuid.uuid4().hex[:8]}",
-                    "chapter": ch,
-                    "physical_time": "",
-                    "time_order": time_order + counter * 0.1,
-                    "character_id": _cid(ke_char),
-                    "location_id": "",
-                    "action": ke.get("action", ""),
-                    "type": ke.get("type", "other"),
-                    "thread_id": _resolve_tid(ke_char),
-                }
+                ev_type = str(ke.get("type") or "other")
+                event = TimelineEvent(
+                    id=f"te_{_uuid.uuid4().hex[:8]}",
+                    chapter=ch,
+                    physical_time="",
+                    time_order=time_order + counter * 0.1,
+                    character_id=_cid(ke_char),
+                    location_id="",
+                    action=ke.get("action", ""),
+                    type=ev_type,
+                    is_key=(ev_type == "key"),
+                    thread_id=_resolve_tid(ke_char),
+                )
                 ws.timeline.append(event)
                 applied["timeline"] += 1
 
@@ -4818,6 +5084,9 @@ async def test_llm_connection(req: TestLLMConnectionReq):
 class DetailedOutlineReq(BaseModel):
     chapter_number: int
     extra_points: str = ""
+    # 可选引用世界背景的哪些段落（按标题）；为空则默认引用第一节
+    background_refs: list[str] = []
+    use_background: bool = True
 
 
 class ChapterContentReq(BaseModel):
@@ -4868,6 +5137,11 @@ async def ai_generate_detailed_outline(book_id: str, req: DetailedOutlineReq):
     # 前情摘要（最近 3 章，且只取本章之前的章节）
     recent_summaries = _recent_summary_text(sm, req.chapter_number, 3)
 
+    # 背景故事：只在细纲这一步可选注入（其余环节靠事件/章纲继承）
+    background_text, used_refs = ("", [])
+    if req.use_background:
+        background_text, used_refs = _select_background(sm, req.background_refs)
+
     # 角色名 ↔ ID 速查：current_state.md 里是裸 ID，没有对照表时细纲只能凭空猜
     char_quick_ref = ""
     try:
@@ -4890,6 +5164,11 @@ async def ai_generate_detailed_outline(book_id: str, req: DetailedOutlineReq):
     if next_co:
         adjacent_ctx += f"\n- 下一章（第{req.chapter_number+1}章）：《{next_co.get('title','')}》— {next_co.get('summary','')}"
 
+    background_block = (
+        f"## 本章关联的世界背景（必须与之一致，不得违背）\n{background_text.strip()}\n"
+        if background_text.strip() else ""
+    )
+
     # 构建细纲 prompt
     prompt = f"""你是一位专业的小说编辑，请根据以下章纲信息，为第 {req.chapter_number} 章生成详细的章节细纲。
 
@@ -4900,6 +5179,7 @@ async def ai_generate_detailed_outline(book_id: str, req: DetailedOutlineReq):
 
 ## 前后章节衔接{adjacent_ctx}
 
+{background_block}
 ## 节拍序列（Beat）
 {json.dumps(target_co.get('beats', []), ensure_ascii=False, indent=2)}
 
@@ -4934,6 +5214,7 @@ async def ai_generate_detailed_outline(book_id: str, req: DetailedOutlineReq):
 - 用户追加的剧情点优先级最高，需要围绕它们展开场景
 - 所有场景 word_budget 之和必须约等于目标字数 {target_co.get('target_words', 4000)}
 - pov / writing_notes / emotional_arc 必须原样继承章纲要求，不得改写或省略
+- 若提供了「本章关联的世界背景」，场景设计、势力立场、规则后果必须与其一致
 请输出一个 JSON 对象，包含以下字段：
 {{
   "chapter_number": {req.chapter_number},
@@ -5018,6 +5299,10 @@ async def ai_generate_detailed_outline(book_id: str, req: DetailedOutlineReq):
     result["chapter_number"] = req.chapter_number
     if not str(result.get("detailed_summary", "")).strip():
         result["detailed_summary"] = target_co.get("summary", "")
+
+    # 记录本章引用了哪些背景段落：正文生成时沿用，重生成时也便于回填
+    result["background_refs"] = used_refs
+    result["background_excerpt"] = background_text.strip()
 
     # 章纲约束必须在细纲里落地，否则「细纲→正文」这一段会丢字段
     if not str(result.get("pov", "")).strip() and target_co.get("pov"):
@@ -5186,6 +5471,10 @@ async def ai_generate_chapter_content(book_id: str, req: ChapterContentReq):
         constraint_sections += f"\n## 叙事视角\n{pov}\n"
     if writing_notes:
         constraint_sections += f"\n## 写作基调（本章重要指导）\n{writing_notes}\n"
+    # 背景故事不全局注入，只沿用细纲里选中的那部分
+    bg_excerpt = str(detailed.get("background_excerpt") or "").strip()
+    if bg_excerpt:
+        constraint_sections += f"\n## 本章世界背景（沿用小纲引用，勿违背）\n{bg_excerpt}\n"
 
     prev_section = ""
     if prev_content.strip():
@@ -5459,7 +5748,7 @@ def export_storycanvas(book_id: str):
     world_name = config.get("title", book_id) + "世界观"
     rules = []
     if isinstance(world_data, dict):
-        for r in world_data.get("rules", []):
+        for r in (world_data.get("world_rules") or world_data.get("rules") or []):
             if isinstance(r, dict):
                 rules.append(r.get("description", r.get("rule", str(r))))
             else:
@@ -5483,6 +5772,7 @@ def export_storycanvas(book_id: str):
         "is_draft": False,
         "content": {
             "world_name": world_name,
+            "background": (world_data.get("background", "") if isinstance(world_data, dict) else ""),
             "fundamental_rules": rules,
         },
         "save_status": "saved",
@@ -5905,6 +6195,7 @@ async def import_storycanvas(file: UploadFile = File(...)):
             factions = []
             events = []
             world_rules = []
+            world_background = ""
             protagonist_id = ""
             story_synopsis_data = {}
             story_outline_data = {}
@@ -5950,8 +6241,12 @@ async def import_storycanvas(file: UploadFile = File(...)):
 
                 elif btype == "WORLDVIEW":
                     wname = content.get("world_name", "")
+                    if isinstance(content.get("background"), str):
+                        world_background = content["background"]
                     rules = content.get("fundamental_rules", [])
-                    world_rules.extend(rules if isinstance(rules, list) else [str(rules)])
+                    for r in (rules if isinstance(rules, list) else [rules]):
+                        # 画布里的规则是纯文本，转成 world_rules 需要的对象结构
+                        world_rules.append({"name": str(r)[:40], "description": str(r)})
 
                 elif btype == "FACTION":
                     factions.append({
@@ -6000,9 +6295,10 @@ async def import_storycanvas(file: UploadFile = File(...)):
             )
 
             world_json = {
+                "background": world_background,
                 "locations": locations,
                 "factions": factions,
-                "rules": world_rules,
+                "world_rules": world_rules,
             }
             (setup_dir / "world.json").write_text(
                 json.dumps(world_json, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -6186,3 +6482,81 @@ async def import_storycanvas(file: UploadFile = File(...)):
             os.unlink(tmp.name)
         except Exception:
             pass
+
+
+# ── 流式生成（SSE）：长耗时 AI 调用实时下发 token ─────────────────────────────
+
+def _sse_event(payload: dict) -> str:
+    return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+
+async def _sse_generate(factory):
+    """把任意返回 dict 的 AI 端点包成 SSE 流。
+
+    事件：chunk（增量文本）→ done（完整结果）｜error（错误信息）
+    """
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def on_chunk(text: str) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, text)
+
+    token = _STREAM_CB.set(on_chunk)
+    task = asyncio.create_task(factory())
+    _STREAM_CB.reset(token)
+    task.add_done_callback(lambda _t: queue.put_nowait(None))
+
+    try:
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield _sse_event({"type": "chunk", "text": item})
+
+        exc = task.exception()
+        if exc is not None:
+            yield _sse_event({"type": "error", "message": str(getattr(exc, "detail", None) or exc)})
+            return
+        yield _sse_event({"type": "done", "data": task.result()})
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+@app.post("/api/books/{book_id}/ai-generate/background/stream")
+async def ai_generate_background_stream(book_id: str, req: AiBackgroundReq):
+    """AI 生成背景（流式）"""
+    return StreamingResponse(
+        _sse_generate(lambda: ai_generate_background(book_id, req)),
+        media_type="text/event-stream", headers=_SSE_HEADERS,
+    )
+
+
+@app.post("/api/books/{book_id}/ai-generate/setup/stream")
+async def ai_generate_setup_stream(book_id: str, req: AiGenerateSetupReq):
+    """AI 生成世界观（流式，输出为 JSON 文本）"""
+    return StreamingResponse(
+        _sse_generate(lambda: ai_generate_setup(book_id, req)),
+        media_type="text/event-stream", headers=_SSE_HEADERS,
+    )
+
+
+@app.post("/api/books/{book_id}/ai-generate/detailed-outline/stream")
+async def ai_generate_detailed_outline_stream(book_id: str, req: DetailedOutlineReq):
+    """AI 生成细纲（流式，输出为 JSON 文本）"""
+    return StreamingResponse(
+        _sse_generate(lambda: ai_generate_detailed_outline(book_id, req)),
+        media_type="text/event-stream", headers=_SSE_HEADERS,
+    )
+
+
+@app.post("/api/books/{book_id}/ai-generate/chapter-content/stream")
+async def ai_generate_chapter_content_stream(book_id: str, req: ChapterContentReq):
+    """AI 生成正文（流式，正文逐字下发，结束后附带摘要/状态结算结果）"""
+    return StreamingResponse(
+        _sse_generate(lambda: ai_generate_chapter_content(book_id, req)),
+        media_type="text/event-stream", headers=_SSE_HEADERS,
+    )

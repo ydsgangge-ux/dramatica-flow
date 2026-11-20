@@ -408,6 +408,58 @@ async function api(endpoint, opts) {
   return await r.json();
 }
 
+// SSE 流式调用：长耗时 AI 生成实时回显 token，返回 done 事件的完整结果
+async function streamApi(endpoint, body, handlers = {}) {
+  const { onChunk, onDone } = handlers;
+  const resp = await fetch(`${API}${endpoint}`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body || {}),
+  });
+  if (!resp.ok || !resp.body) {
+    let detail = `HTTP ${resp.status}`;
+    try { const j = await resp.json(); detail = j.detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buf = '', result = null, error = null;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const parts = buf.split('\n\n');
+    buf = parts.pop();
+    for (const part of parts) {
+      const line = part.split('\n').find(l => l.startsWith('data:'));
+      if (!line) continue;
+      let evt;
+      try { evt = JSON.parse(line.slice(5).trim()); } catch (e) { continue; }
+      if (evt.type === 'chunk') { if (onChunk) onChunk(evt.text || ''); }
+      else if (evt.type === 'done') { result = evt.data; if (onDone) onDone(evt.data); }
+      else if (evt.type === 'error') { error = evt.message || '生成失败'; }
+    }
+  }
+  if (error) throw new Error(error);
+  return result;
+}
+
+// 流式状态栏：首字可能等很久，用「已等待 Ns + 累计字数」让用户知道没卡死
+function streamStatus(el, label) {
+  const t0 = Date.now();
+  let chars = 0;
+  const render = () => {
+    if (!el) return;
+    const sec = Math.round((Date.now() - t0) / 1000);
+    el.textContent = chars > 0 ? `${label} ${chars} 字 · 已用 ${sec}s` : `${label} 已等待 ${sec}s`;
+  };
+  render();
+  const timer = setInterval(render, 1000);
+  return {
+    setChars(n) { chars = n; render(); },
+    stop() { clearInterval(timer); },
+  };
+}
+
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function escAttr(s) { return esc(s); }
 
@@ -846,8 +898,9 @@ async function editExistingSetup(mode) {
     const eventsData = JSON.parse(events.content);
     if (mode === 'form') {
       formChars = charsData.characters || [];
-      formWorld = { locations: worldData.locations || [], factions: worldData.factions || [], rules: worldData.rules || [] };
+      formWorld = normalizeFormWorld(worldData);
       formEvents = eventsData.events || [];
+      formTab = 'background';
       renderStep3Form();
     } else if (mode === 'json') {
       setupCache.characters = chars.content;
@@ -901,7 +954,7 @@ async function loadStep3(forceSelect) {
   if (!status.has_templates || forceSelect) {
     document.getElementById('step3-panel').innerHTML = `
       <div class="guide-card"><h2>设定世界观 <span style="font-size:12px;font-weight:400;margin-left:12px"><button class="btn btn-ghost btn-sm" onclick="editBookSettings('${currentBook.id}')">&#9881; 书籍设置</button></span></h2>
-        <p>世界观是小说的基础，包括<b>角色</b>、<b>世界</b>和<b>事件</b>三个部分。<br>
+        <p>世界观是小说的基础，建议顺序是<b>背景故事</b> → <b>角色</b> → <b>世界</b> → <b>事件</b>。<br>
         你可以选择以下方式来配置：</p>
         <div style="text-align:left;max-width:500px;margin:0 auto;display:flex;flex-direction:column;gap:10px">
           <div style="display:flex;gap:12px;align-items:center;padding:12px;background:var(--bg-dark);border-radius:6px;border-left:3px solid #f39c12">
@@ -959,7 +1012,8 @@ function loadStep3AI() {
       <div style="margin-bottom:12px"><button class="btn btn-ghost btn-sm" onclick="loadStep3(true)">&#8592; 返回世界观选择</button></div>
       <div class="card">
         <div class="card-header">&#129302; AI 生成世界观</div>
-        <div class="form-desc">只需描述你的核心想法，AI 将自动生成完整的角色、世界设定和事件库。你也可以选择详细程度。</div>
+        <div class="form-desc">只需描述你的核心想法，AI 将自动生成完整的角色、世界设定和事件库。你也可以选择详细程度。<br>
+        <b>若已填写「背景故事」，生成时会以其为依据</b>（建议先去表单模式写好背景，再回来生成）。</div>
         <div class="form-group"><label class="form-label">核心想法（可选，留空则 AI 自行发挥）</label>
           <textarea class="form-textarea" id="ai-idea" placeholder="例：一个废柴少年意外获得上古传承，在修仙世界中逆天改命，却发现整个世界是一个被封印的秘境..."></textarea>
         </div>
@@ -981,17 +1035,33 @@ async function aiGenerateSetup() {
   const btn = document.getElementById('ai-gen-btn');
   btn.disabled = true; btn.textContent = 'AI 正在生成...';
   toast('AI 正在生成世界观，请稍候...', 'loading');
+  let st = null;
   try {
-    const res = await api(`/books/${currentBook.id}/ai-generate/setup`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        genre: currentBook.genre || '玄幻',
-        book_title: currentBook.title || '未命名',
-        idea: document.getElementById('ai-idea').value,
-        style: document.getElementById('ai-detail').value,
-      }),
+    const previewEl = document.getElementById('ai-preview');
+    previewEl.style.display = '';
+    previewEl.innerHTML = `
+      <div class="card" style="padding:12px">
+        <div class="card-header">&#10024; <span id="ai-stream-meta"></span></div>
+        <pre id="ai-stream-pre" style="max-height:320px;overflow:auto;white-space:pre-wrap;font-size:11px;color:var(--text2);margin:0"></pre>
+        <div style="font-size:11px;color:var(--text3);margin-top:6px">模型正在输出 JSON，完成后自动解析为角色 / 世界 / 事件</div>
+      </div>`;
+    let acc = '';
+    st = streamStatus(document.getElementById('ai-stream-meta'), 'AI 正在生成世界观…');
+    const res = await streamApi(`/books/${currentBook.id}/ai-generate/setup/stream`, {
+      genre: currentBook.genre || '玄幻',
+      book_title: currentBook.title || '未命名',
+      idea: document.getElementById('ai-idea').value,
+      style: document.getElementById('ai-detail').value,
+    }, {
+      onChunk: (t) => {
+        acc += t;
+        const pre = document.getElementById('ai-stream-pre');
+        if (pre) { pre.textContent = acc.slice(-6000); pre.scrollTop = pre.scrollHeight; }
+        st.setChars(acc.length);
+      },
     });
-    if (!res.ok) { toast(res.error || '生成失败', false); btn.disabled = false; btn.textContent = '重新生成'; return; }
+    st.stop();
+    if (!res || res.ok === false) { toast((res && res.error) || '生成失败', false); btn.disabled = false; btn.textContent = '重新生成'; return; }
     const data = res.data;
     // 预览
     const chars = data.characters || [];
@@ -1015,6 +1085,7 @@ async function aiGenerateSetup() {
         </div>
       </div>`;
   } catch (e) { toast('生成失败: ' + e.message, false); }
+  if (st) st.stop();
   btn.disabled = false; btn.textContent = '生成世界观 &#10024;';
 }
 
@@ -1028,9 +1099,12 @@ function renderAICharsPreview(chars) {
 }
 
 function showAIWorldPreview(world) {
-  const locs = world.locations || [], facs = world.factions || [], rules = world.rules || [];
+  const locs = world.locations || [], facs = world.factions || [], rules = world.world_rules || world.rules || [];
+  const bg = typeof world.background === 'string' ? world.background : '';
   return `<div style="font-size:12px;color:var(--text2)">
-    <div class="section-label">地点 (${locs.length})</div>
+    ${bg ? `<div class="section-label">背景故事 (${bg.length} 字)</div>
+      <pre style="white-space:pre-wrap;font-size:11px;max-height:180px;overflow:auto;background:var(--bg-dark);padding:8px;border-radius:6px;margin:4px 0 0">${esc(bg)}</pre>` : ''}
+    <div class="section-label" style="margin-top:10px">地点 (${locs.length})</div>
     ${locs.map(l => `<div style="padding:6px 0">${esc(l.name)}：${esc(l.description||'-')}</div>`).join('')}
     <div class="section-label" style="margin-top:10px">势力 (${facs.length})</div>
     ${facs.map(f => `<div style="padding:6px 0">${esc(f.name)}：${esc(f.description||'-')}</div>`).join('')}
@@ -1067,10 +1141,19 @@ async function saveAIResult() {
       method: 'PUT', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ file_type: 'characters', content: JSON.stringify({ characters: r.characters }, null, 2) }),
     });
-    // world.json 已是 {locations:[],factions:[],rules:[]} 格式，但需加 world_rules key
+    // world.json 已是 {locations:[],factions:[],rules:[]} 格式，但需加 world_rules key；
+    // 背景故事 AI 不产出，必须沿用已保存的内容，否则会被整份覆盖
+    let existingBg = '';
+    try {
+      const bgRes = await api(`/books/${currentBook.id}/background`);
+      existingBg = bgRes.background || '';
+    } catch (e) {}
     await api(`/books/${currentBook.id}/setup/world`, {
       method: 'PUT', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ file_type: 'world', content: JSON.stringify(r.world, null, 2) }),
+      body: JSON.stringify({
+        file_type: 'world',
+        content: JSON.stringify({ ...r.world, background: r.world?.background || existingBg }, null, 2),
+      }),
     });
     // events.json → {"events":[...]}
     await api(`/books/${currentBook.id}/setup/events`, {
@@ -1080,7 +1163,8 @@ async function saveAIResult() {
     const res = await api(`/books/${currentBook.id}/setup/load`, { method: 'POST' });
     toast(`保存成功：${res.characters.length} 角色、${res.events} 事件，已进入世界观编辑`, true);
     unlockStep(3); goStep(3);
-    setTimeout(() => { step3Mode = 'form'; loadStep3Form(window._aiResult); }, 100);
+    // 从磁盘重新加载，确保背景故事等 AI 未产出的字段不丢失
+    setTimeout(() => { step3Mode = 'form'; editExistingSetup('form'); }, 100);
   } catch (e) { toast('保存失败: ' + e.message, false); }
 }
 
@@ -1200,7 +1284,7 @@ async function extractFromNovel() {
     document.getElementById('extract-preview').innerHTML = `
       <div class="card" style="margin-top:12px">
         <div class="card-header">&#10003; 提取成功 — 预览</div>
-        <div class="form-desc">从小说文本中提取了 ${chars.length} 个角色、${(world.locations||[]).length} 个地点、${(world.factions||[]).length} 个势力、${(world.rules||[]).length} 个世界规则、${events.length} 个事件。请检查并调整后保存。</div>
+        <div class="form-desc">从小说文本中提取了 ${chars.length} 个角色、${(world.locations||[]).length} 个地点、${(world.factions||[]).length} 个势力、${((world.world_rules || world.rules)||[]).length} 个世界规则、${events.length} 个事件、背景故事 ${(world.background||'').length} 字。请检查并调整后保存。</div>
         <div class="mode-tabs" style="margin-bottom:12px">
           <div class="mode-tab active" onclick="showAIPreview('chars',this)">&#128100; 角色 (${chars.length})</div>
           <div class="mode-tab" onclick="showAIPreview('world',this)">&#127758; 世界</div>
@@ -1231,7 +1315,7 @@ function showImportJsonModal() {
     <div class="modal" style="max-width:700px">
       <h3>&#128229; 导入 JSON 世界观数据</h3>
       <div class="form-desc" style="margin-bottom:12px">
-        使用方法：将小说全文发送给外部大模型（如 <a href="https://chat.deepseek.com" target="_blank" style="color:var(--blue)">DeepSeek</a>），让其按指定格式提取角色/世界/事件，然后将输出的 JSON 粘贴到此处。<br>
+        使用方法：将小说全文发送给外部大模型（如 <a href="https://chat.deepseek.com" target="_blank" style="color:var(--blue)">DeepSeek</a>），让其按指定格式提取角色、世界（含<b>背景故事</b>）和事件，然后将输出的 JSON 粘贴到此处。<br>
         <a href="/templates/novel_extract_prompt.md" target="_blank" style="color:var(--blue)">&#128196; 查看/下载提取提示词和 JSON 模板</a>
       </div>
       <div class="form-group">
@@ -1242,7 +1326,7 @@ function showImportJsonModal() {
           </label>
           <span id="import-json-file-info" style="font-size:11px;color:var(--text3);line-height:28px"></span>
         </div>
-        <textarea class="form-textarea" id="import-json-text" rows="14" placeholder='粘贴 JSON 内容，格式如下：&#10;{&#10;  "characters": [...],&#10;  "world": { "locations": [...], "factions": [...], "rules": [...] },&#10;  "events": [...]&#10;}'></textarea>
+        <textarea class="form-textarea" id="import-json-text" rows="14" placeholder='粘贴 JSON 内容，格式如下：&#10;{&#10;  "characters": [...],&#10;  "world": {&#10;    "background": "## 一句话世界观\n……\n\n## 纪元与历史\n……",&#10;    "locations": [...],&#10;    "factions": [...],&#10;    "world_rules": [...]&#10;  },&#10;  "events": [...]&#10;}&#10;&#10;兼容旧格式：rules 会自动识别为 world_rules'></textarea>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn" onclick="document.getElementById('modal-import-json').remove()">取消</button>
@@ -1285,11 +1369,20 @@ async function doImportJson() {
   const events = data.events || [];
   const locs = world.locations || [];
   const factions = world.factions || [];
-  const rules = world.rules || [];
+  const rules = world.world_rules || world.rules || [];
 
   // 确保模板已初始化
   toast('正在保存世界观数据...', 'loading');
   try {
+    // 导入 JSON 里没有 background 时保留已有背景，避免整份覆盖把它抹掉
+    let existingBg = '';
+    try {
+      const bgRes = await api(`/books/${currentBook.id}/background`);
+      existingBg = bgRes.background || '';
+    } catch (e) {}
+    const importedBg = typeof world.background === 'string' ? world.background.trim() : '';
+    world.background = importedBg || existingBg;
+
     await api(`/books/${currentBook.id}/setup/init`, { method: 'POST' });
     await api(`/books/${currentBook.id}/setup/characters`, {
       method: 'PUT', headers: {'Content-Type': 'application/json'},
@@ -1304,11 +1397,13 @@ async function doImportJson() {
       body: JSON.stringify({ file_type: 'events', content: JSON.stringify({ events: events }, null, 2) }),
     });
     const res = await api(`/books/${currentBook.id}/setup/load`, { method: 'POST' });
-    toast(`导入成功：${chars.length} 个角色、${locs.length} 个地点、${factions.length} 个势力、${events.length} 个事件`, true);
+    const bgNote = world.background ? `、背景 ${world.background.length} 字` : '（未包含背景故事）';
+    toast(`导入成功：${chars.length} 个角色、${locs.length} 个地点、${factions.length} 个势力、${rules.length} 条规则、${events.length} 个事件${bgNote}`, true);
     document.getElementById('modal-import-json')?.remove();
     window._aiResult = data;
     unlockStep(3); goStep(3);
-    setTimeout(() => { step3Mode = 'form'; loadStep3Form(window._aiResult); }, 100);
+    // 从磁盘重新加载，确保背景故事等 AI 未产出的字段不丢失
+    setTimeout(() => { step3Mode = 'form'; editExistingSetup('form'); }, 100);
   } catch (e) { toast('导入失败: ' + e.message, false); }
 }
 
@@ -1488,13 +1583,22 @@ async function saveExtractResult() {
   try { await api(`/books/${currentBook.id}/setup/init`, { method: 'POST' }); } catch {}
   try {
     const r = window._aiResult;
+    // AI 只产出角色/地点/势力/规则/事件，背景故事必须保留，否则会被整份覆盖掉
+    let existingBg = '';
+    try {
+      const bgRes = await api(`/books/${currentBook.id}/background`);
+      existingBg = bgRes.background || '';
+    } catch {}
     await api(`/books/${currentBook.id}/setup/characters`, {
       method: 'PUT', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ file_type: 'characters', content: JSON.stringify({ characters: r.characters }, null, 2) }),
     });
     await api(`/books/${currentBook.id}/setup/world`, {
       method: 'PUT', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ file_type: 'world', content: JSON.stringify(r.world, null, 2) }),
+      body: JSON.stringify({
+        file_type: 'world',
+        content: JSON.stringify({ ...r.world, background: r.world?.background || existingBg }, null, 2),
+      }),
     });
     await api(`/books/${currentBook.id}/setup/events`, {
       method: 'PUT', headers: {'Content-Type': 'application/json'},
@@ -1503,57 +1607,214 @@ async function saveExtractResult() {
     const res = await api(`/books/${currentBook.id}/setup/load`, { method: 'POST' });
     toast(`保存成功：${res.characters.length} 角色、${res.events} 事件，已进入世界观编辑`, true);
     unlockStep(3); goStep(3);
-    setTimeout(() => { step3Mode = 'form'; loadStep3Form(window._aiResult); }, 100);
+    // 从磁盘重新加载，确保背景故事等 AI 未产出的字段不丢失
+    setTimeout(() => { step3Mode = 'form'; editExistingSetup('form'); }, 100);
   } catch (e) { toast('保存失败: ' + e.message, false); }
 }
 
 // ── Step 3 表单模式 ───────────────────────────────────────────────────────
 
-let formChars = [], formWorld = { locations: [], factions: [], rules: [] }, formEvents = [];
+let formChars = [], formWorld = { background: '', locations: [], factions: [], rules: [] }, formEvents = [];
+let formTab = 'background';  // 背景故事是世界观的第一层，默认先看它
+
+function normalizeFormWorld(world) {
+  const w = world && typeof world === 'object' ? world : {};
+  return {
+    background: typeof w.background === 'string' ? w.background : '',
+    locations: Array.isArray(w.locations) ? w.locations : [],
+    factions: Array.isArray(w.factions) ? w.factions : [],
+    rules: Array.isArray(w.rules) ? w.rules : [],
+  };
+}
 
 function loadStep3Form(data) {
   if (data) {
     formChars = data.characters || [];
-    formWorld = data.world || { locations: [], factions: [], rules: [] };
+    formWorld = normalizeFormWorld(data.world);
     formEvents = data.events || [];
   } else {
-    formChars = []; formWorld = { locations: [], factions: [], rules: [] }; formEvents = [];
+    formChars = []; formWorld = normalizeFormWorld(null); formEvents = [];
   }
+  formTab = 'background';
   renderStep3Form();
 }
 
-function loadStep3FormWith(data) { loadStep3Form(data); }
+async function loadStep3FormWith(data) {
+  loadStep3Form(data);
+  // AI 结果不含背景故事：从已保存的 world.json 回填，避免保存时把背景冲掉
+  if (!formWorld.background && currentBook) {
+    try {
+      const bg = await api(`/books/${currentBook.id}/background`);
+      if (bg.background) {
+        formWorld.background = bg.background;
+        if (formTab === 'background') renderFormTabContent();
+      }
+    } catch (e) {}
+  }
+}
 
 function renderStep3Form() {
+  const tabs = [
+    ['background', '&#128214; 背景故事'],
+    ['chars', `&#128100; 角色 (${formChars.length})`],
+    ['world', '&#127758; 世界'],
+    ['events', `&#9889; 事件 (${formEvents.length})`],
+    ['threads', '&#128279; 线程'],
+  ];
+  const tabBar = tabs.map(([key, label]) =>
+    `<div class="tab-item${formTab === key ? ' active' : ''}" onclick="switchFormTab('${key}',this)">${label}</div>`
+  ).join('');
+
   document.getElementById('step3-panel').innerHTML = `
     <div style="max-width:800px;margin:0 auto">
       <div style="margin-bottom:12px"><button class="btn btn-ghost btn-sm" onclick="loadStep3(true)">&#8592; 返回世界观选择</button></div>
       <div class="card">
         <div class="card-header">&#128221; 世界观表单编辑</div>
-        <div class="form-desc">用简单表单填写角色、地点、事件。系统会自动生成 JSON 配置文件。每个角色至少需要<b>姓名</b>和<b>角色定位</b>。</div>
-        <div class="tab-bar">
-          <div class="tab-item active" onclick="switchFormTab('chars',this)">&#128100; 角色 (${formChars.length})</div>
-          <div class="tab-item" onclick="switchFormTab('world',this)">&#127758; 世界</div>
-          <div class="tab-item" onclick="switchFormTab('events',this)">&#9889; 事件 (${formEvents.length})</div>
-          <div class="tab-item" onclick="switchFormTab('threads',this)">&#128279; 线程</div>
-        </div>
-        <div id="form-content">${renderFormChars()}</div>
+        <div class="form-desc">建议顺序：<b>① 背景故事</b> → <b>② 角色</b> → <b>③ 世界</b> → <b>④ 事件</b>。背景故事是源头，AI 生成角色/世界/事件时会以它为依据。每个角色至少需要<b>姓名</b>和<b>角色定位</b>。</div>
+        <div class="tab-bar">${tabBar}</div>
+        <div id="form-content"></div>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
-        <button class="btn" onclick="step3Mode='ai';loadStep3AI()">切换 AI 模式</button>
+        <button class="btn" onclick="switchToAIMode()">切换 AI 模式</button>
         <button class="btn btn-success" onclick="saveFormResult()">保存全部并加载 &#8250;</button>
       </div>
     </div>`;
+  renderFormTabContent();
+}
+
+function renderFormTabContent() {
+  const cont = document.getElementById('form-content');
+  if (!cont) return;
+  if (formTab === 'background') cont.innerHTML = renderFormBackground();
+  else if (formTab === 'world') cont.innerHTML = renderFormWorld();
+  else if (formTab === 'events') cont.innerHTML = renderFormEvents();
+  else if (formTab === 'threads') { cont.innerHTML = '<div class="loading">加载线程...</div>'; loadThreadsData(); }
+  else cont.innerHTML = renderFormChars();
+}
+
+// ── 背景故事子页 ────────────────────────────────────────────────────────────
+
+function renderFormBackground() {
+  const bg = formWorld.background || '';
+  return `
+    <div class="form-desc" style="margin-bottom:8px">
+      写清这个世界的<b>历史与格局</b>（纪元、旧战争、势力恩怨、规则代价）。它会被用于生成角色/世界/事件，
+      后续章节默认<b>不再重复注入</b>，只在单章细纲里可按段引用。用 <code>## 小标题</code> 分段，便于细纲勾选。
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+      <button class="btn btn-sm btn-primary" onclick="aiGenBackground(this)">&#10024; AI 生成背景</button>
+      <button class="btn btn-sm" onclick="persistBackground()">&#128190; 仅保存背景</button>
+      <span id="bg-status" style="font-size:11px;color:var(--text3)"></span>
+      <span style="font-size:11px;color:var(--text3)">${bg.length} 字</span>
+    </div>
+    <textarea id="form-background" class="form-textarea" rows="18" style="font-size:12px;line-height:1.7"
+      placeholder="## 一句话世界观&#10;……&#10;&#10;## 纪元与历史&#10;……&#10;&#10;## 地理与势力格局&#10;……&#10;&#10;## 力量与规则体系&#10;……"
+      oninput="formWorld.background=this.value">${esc(bg)}</textarea>`;
+}
+
+async function aiGenBackground(btn) {
+  if (!currentBook) return;
+  const ta = document.getElementById('form-background');
+  const idea = ta ? ta.value.trim().slice(0, 500) : '';
+  const status = document.getElementById('bg-status');
+  if (btn) { btn.disabled = true; btn.textContent = '生成中...'; }
+  const st = streamStatus(status, 'AI 正在生成背景…');
+  try {
+    let acc = '';
+    if (ta) { ta.value = ''; }
+    const res = await streamApi(`/books/${currentBook.id}/ai-generate/background/stream`, {
+      genre: currentBook.genre || '',
+      book_title: currentBook.title || '',
+      idea: idea,
+      style: 'standard',
+    }, {
+      onChunk: (t) => {
+        acc += t;
+        if (ta) { ta.value = acc; ta.scrollTop = ta.scrollHeight; }
+        st.setChars(acc.length);
+      },
+    });
+    const bgText = (res && res.background) || acc;
+    if (!res || res.ok === false || !bgText) { toast((res && res.error) || '生成失败', false); return; }
+    formWorld.background = bgText;
+    if (ta) ta.value = bgText;
+    if (status) status.textContent = `已生成 ${bgText.length} 字，记得保存`;
+    toast('背景已生成，确认后点击保存', true);
+  } catch (e) {
+    toast('生成失败: ' + e.message, false);
+    if (status) status.textContent = '';
+  } finally {
+    st.stop();
+    if (btn) { btn.disabled = false; btn.textContent = '✨ AI 生成背景'; }
+  }
+}
+
+async function persistBackground() {
+  if (!currentBook) return false;
+  const ta = document.getElementById('form-background');
+  if (ta) formWorld.background = ta.value;
+  const status = document.getElementById('bg-status');
+  try {
+    await api(`/books/${currentBook.id}/background`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ background: formWorld.background || '' }),
+    });
+    if (status) status.textContent = '已保存';
+    toast('背景故事已保存', true);
+    return true;
+  } catch (e) {
+    toast('背景保存失败: ' + e.message, false);
+    return false;
+  }
+}
+
+async function switchToAIMode() {
+  // AI 模式从 world.json 读背景，切换前先把当前输入落盘，避免用旧背景生成
+  try { await persistBackground(); } catch (e) {}
+  step3Mode = 'ai';
+  loadStep3AI();
 }
 
 function switchFormTab(tab, el) {
-  el.parentElement.querySelectorAll('.tab-item').forEach(t => t.classList.remove('active'));
-  el.classList.add('active');
-  const cont = document.getElementById('form-content');
-  if (tab === 'chars') cont.innerHTML = renderFormChars();
-  else if (tab === 'world') cont.innerHTML = renderFormWorld();
-  else if (tab === 'events') cont.innerHTML = renderFormEvents();
-  else if (tab === 'threads') { loadThreadsData(); cont.innerHTML = '<div class="loading">加载线程...</div>'; }
+  formTab = tab;
+  if (el && el.parentElement) {
+    el.parentElement.querySelectorAll('.tab-item').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+  }
+  renderFormTabContent();
+}
+
+// 生成不重复的条目 ID（删除后再添加不会撞号）
+function nextFormId(list, prefix) {
+  const used = new Set((list || []).map(x => x && x.id).filter(Boolean));
+  let n = 1;
+  while (used.has(prefix + String(n).padStart(3, '0'))) n++;
+  return prefix + String(n).padStart(3, '0');
+}
+
+const WORLD_ID_PREFIX = { locations: 'loc_', factions: 'faction_', rules: 'rule_' };
+
+function addFormWorldItem(key) {
+  if (!Array.isArray(formWorld[key])) formWorld[key] = [];
+  const list = formWorld[key];
+  list.push({ id: nextFormId(list, WORLD_ID_PREFIX[key] || 'item_'), name: '', description: '' });
+  renderFormTabContent();
+}
+
+function removeFormWorldItem(key, index) {
+  if (!Array.isArray(formWorld[key])) return;
+  formWorld[key].splice(index, 1);
+  renderFormTabContent();
+}
+
+function removeFormChar(index) {
+  formChars.splice(index, 1);
+  renderFormTabContent();
+}
+
+function removeFormEvent(index) {
+  formEvents.splice(index, 1);
+  renderFormTabContent();
 }
 
 function renderFormChars() {
@@ -1563,7 +1824,7 @@ function renderFormChars() {
     </div>` +
     formChars.map((c, i) => `
       <div class="form-item-card">
-        <div class="remove-btn" onclick="formChars.splice(${i},1);renderStep3Form()">&#10005;</div>
+        <div class="remove-btn" onclick="removeFormChar(${i})">&#10005;</div>
         <div class="form-row">
           <div class="form-group"><label class="form-label">姓名 *</label><input class="form-input" value="${esc(c.name)}" onchange="formChars[${i}].name=this.value"></div>
           <div class="form-group"><label class="form-label">角色定位</label><select class="form-select" onchange="formChars[${i}].role=this.value"><option value="protagonist" ${c.role==='protagonist'?'selected':''}>主角</option><option value="antagonist" ${c.role==='antagonist'?'selected':''}>反派</option><option value="mentor" ${c.role==='mentor'?'selected':''}>导师</option><option value="love_interest" ${c.role==='love_interest'?'selected':''}>情感线</option><option value="supporting" ${c.role==='supporting'?'selected':''}>配角</option></select></div>
@@ -1579,8 +1840,8 @@ function renderFormChars() {
 }
 
 function addFormChar() {
-  formChars.push({ id: 'char_' + String(formChars.length+1).padStart(3,'0'), name: '', role: 'supporting', need: { external: '', internal: '' }, personality: [], behavior_lock: [], arc: '', backstory: '' });
-  renderStep3Form();
+  formChars.push({ id: nextFormId(formChars, 'char_'), name: '', role: 'supporting', need: { external: '', internal: '' }, personality: [], behavior_lock: [], arc: '', backstory: '' });
+  renderFormTabContent();
 }
 
 function renderFormWorld() {
@@ -1588,11 +1849,11 @@ function renderFormWorld() {
     <div style="margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <div style="font-size:12px;font-weight:500;color:var(--text2)">${label} (${arr.length})</div>
-        <button class="btn btn-sm" onclick="formWorld.${key}.push({id:'${key}_'+'${key}'.length,name:'',description:''});renderStep3Form()">+ 添加</button>
+        <button class="btn btn-sm" onclick="addFormWorldItem('${key}')">+ 添加</button>
       </div>
       ${arr.map((item, i) => `
         <div class="form-item-card">
-          <div class="remove-btn" onclick="formWorld.${key}.splice(${i},1);renderStep3Form()">&#10005;</div>
+          <div class="remove-btn" onclick="removeFormWorldItem('${key}',${i})">&#10005;</div>
           <div class="form-row">
             <div class="form-group"><label class="form-label">名称</label><input class="form-input" value="${esc(item.name)}" onchange="formWorld.${key}[${i}].name=this.value" placeholder="${placeholder}"></div>
             <div class="form-group"><label class="form-label">描述</label><input class="form-input" value="${esc(item.description||'')}" onchange="formWorld.${key}[${i}].description=this.value"></div>
@@ -1613,7 +1874,7 @@ function renderFormEvents() {
     </div>` +
     formEvents.map((e, i) => `
       <div class="form-item-card">
-        <div class="remove-btn" onclick="formEvents.splice(${i},1);renderStep3Form()">&#10005;</div>
+        <div class="remove-btn" onclick="removeFormEvent(${i})">&#10005;</div>
         <div class="form-row">
           <div class="form-group"><label class="form-label">事件名称</label><input class="form-input" value="${esc(e.name)}" onchange="formEvents[${i}].name=this.value"></div>
           <div class="form-group"><label class="form-label">所属幕</label><select class="form-select" onchange="formEvents[${i}].suggested_act=parseInt(this.value)"><option value="1" ${e.suggested_act===1?'selected':''}>第一幕</option><option value="2" ${e.suggested_act===2?'selected':''}>第二幕</option><option value="3" ${e.suggested_act===3?'selected':''}>第三幕</option></select></div>
@@ -1639,19 +1900,22 @@ function renderFormEvents() {
 }
 
 function addFormEvent() {
-  formEvents.push({ id: 'evt_' + String(formEvents.length+1).padStart(3,'0'), name: '', description: '', suggested_act: 1, suggested_function: 'setup', characters_involved: [], dramatic_question: '' });
-  renderStep3Form();
+  formEvents.push({ id: nextFormId(formEvents, 'evt_'), name: '', description: '', suggested_act: 1, suggested_function: 'setup', characters_involved: [], dramatic_question: '' });
+  renderFormTabContent();
 }
 
 async function saveFormResult() {
   if (!currentBook) return;
+  // 背景可能来自 textarea，保存前同步一次
+  const bgArea = document.getElementById('form-background');
+  if (bgArea) formWorld.background = bgArea.value;
   try {
     // characters: 数组 → {"characters":[...]}
     await api(`/books/${currentBook.id}/setup/characters`, {
       method: 'PUT', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ file_type: 'characters', content: JSON.stringify({ characters: formChars }, null, 2) }),
     });
-    // world: 已是 {locations:[],factions:[],rules:[]} 格式
+    // world: {background, locations, factions, rules}
     await api(`/books/${currentBook.id}/setup/world`, {
       method: 'PUT', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ file_type: 'world', content: JSON.stringify(formWorld, null, 2) }),
@@ -1888,7 +2152,7 @@ async function loadStep3JSON() {
 function renderJSONEditor(type) {
   const files = [
     { key: 'characters', label: '角色定义', icon: '&#128100;', desc: 'JSON数组，每个角色包含 name, role, need, personality, arc' },
-    { key: 'world', label: '世界设定', icon: '&#127758;', desc: 'JSON对象，包含 locations, factions, rules' },
+    { key: 'world', label: '世界设定', icon: '&#127758;', desc: 'JSON对象，包含 background（背景故事）, locations, factions, rules' },
     { key: 'events', label: '事件库', icon: '&#9889;', desc: 'JSON数组，每个事件包含 name, description, suggested_act, suggested_function' },
   ];
   const content = setupCache[type] || '';
@@ -3050,6 +3314,7 @@ function selectWritingChapter(idx) {
     <div style="border-left:3px solid var(--purple);padding-left:12px;margin-bottom:14px">
       <div style="font-size:12px;font-weight:600;color:var(--purple);margin-bottom:8px">2. 生成章节细纲</div>
       <div style="font-size:11px;color:var(--text3);margin-bottom:8px">AI 将根据章纲+剧情点，生成包含场景拆分、对话方向、伏笔计划的详细细纲</div>
+      <div id="bg-select-area" style="margin-bottom:8px"></div>
       <button class="btn btn-sm" style="background:var(--purple)" onclick="genDetailedOutline(${chNum})">&#10024; AI 生成细纲</button>
       <div id="detail-outline-area" style="margin-top:10px"></div>
     </div>
@@ -3069,8 +3334,36 @@ function selectWritingChapter(idx) {
     el.style.borderLeft = i === idx ? '3px solid var(--blue)' : '';
     el.style.background = i === idx ? 'var(--bg2)' : '';
   });
-  // 自动加载已有细纲（如果已生成过）
-  loadExistingDetailedOutline(chNum);
+  // 自动加载已有细纲（如果已生成过），再按已保存的引用回填背景勾选
+  loadExistingDetailedOutline(chNum).then(() => loadBackgroundSelector());
+}
+
+// ── 细纲的背景段落选择（背景故事只在细纲这一步可选注入） ──────────────────
+
+async function loadBackgroundSelector() {
+  const area = document.getElementById('bg-select-area');
+  if (!area || !currentBook) return;
+  try {
+    const res = await api(`/books/${currentBook.id}/background`);
+    const sections = res.sections || [];
+    window._bgSections = sections;
+    if (!sections.length) {
+      area.innerHTML = '<div style="font-size:11px;color:var(--text3)">（尚未填写背景故事，可在「世界观 → 背景故事」中补充；不填则本章不引用背景）</div>';
+      return;
+    }
+    const saved = (window._currentDetailedOutline || {}).background_refs || [];
+    const checked = saved.length ? saved : [sections[0].title];
+    area.innerHTML = `
+      <div style="font-size:11px;color:var(--text2);margin-bottom:4px">引用世界背景（默认第一节，可多选；不勾选则不注入）</div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px">
+        ${sections.map(s => `<label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer">
+          <input type="checkbox" class="bg-ref-cb" value="${esc(s.title)}" ${checked.includes(s.title) ? 'checked' : ''}>
+          ${esc(s.title)}
+        </label>`).join('')}
+      </div>`;
+  } catch (e) {
+    area.innerHTML = '';
+  }
 }
 
 async function saveChapterOutline(idx) {
@@ -3121,6 +3414,7 @@ function renderDetailedOutline(d) {
           <div style="font-size:11px;color:var(--text3)">冲突：${esc(s.conflict||'')}</div>
           ${s.beats?.length ? `<div style="font-size:10px;color:var(--purple);margin-top:2px">节拍：${s.beats.map(b=>esc(b)).join(' → ')}</div>` : ''}
         </div>`).join('')}` : ''}
+      ${d.background_refs?.length ? `<div style="font-size:10px;color:var(--text3);margin-top:2px">&#128214; 引用背景：${d.background_refs.map(r=>esc(r)).join('、')}</div>` : ''}
       ${d.hooks_to_plant?.length ? `<div style="font-size:10px;color:var(--yellow);margin-top:4px">&#128279; 埋伏笔：${d.hooks_to_plant.map(h=>esc(h)).join('、')}</div>` : ''}
       ${d.hooks_to_advance?.length ? `<div style="font-size:10px;color:var(--blue);margin-top:2px">&#128260; 推伏笔：${d.hooks_to_advance.map(h=>esc(h)).join('、')}</div>` : ''}
       ${d.chapter_end_hook ? `<div style="font-size:10px;color:var(--green);margin-top:2px">&#127919; 结尾钩子：${esc(d.chapter_end_hook)}</div>` : ''}
@@ -3132,21 +3426,40 @@ async function genDetailedOutline(chNum) {
   if (!area) return;
   if (window._detailBusy) return toast('正在生成细纲，请稍候', false);
   window._detailBusy = true;
+  let st = null;
   const extraPoints = document.getElementById('ed-extra-points')?.value || '';
-  area.innerHTML = '<div class="loading" style="padding:10px">AI 正在生成细纲，请稍候...</div>';
+  area.innerHTML = `<div class="card" style="padding:12px;margin-top:8px">
+    <div style="font-size:11px;font-weight:600;color:var(--purple);margin-bottom:6px">
+      <span id="detail-stream-meta"></span>
+    </div>
+    <pre id="detail-stream-pre" style="max-height:220px;overflow:auto;white-space:pre-wrap;font-size:11px;color:var(--text2);margin:0"></pre></div>`;
   toast('正在生成细纲...', 'loading');
   try {
-    const res = await api(`/books/${currentBook.id}/ai-generate/detailed-outline`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ chapter_number: chNum, extra_points: extraPoints }),
+    const refs = Array.from(document.querySelectorAll('.bg-ref-cb:checked')).map(el => el.value);
+    const hasSelector = !!document.getElementById('bg-select-area');
+    let acc = '';
+    st = streamStatus(document.getElementById('detail-stream-meta'), 'AI 正在生成细纲…');
+    const res = await streamApi(`/books/${currentBook.id}/ai-generate/detailed-outline/stream`, {
+      chapter_number: chNum,
+      extra_points: extraPoints,
+      background_refs: refs,
+      use_background: hasSelector ? refs.length > 0 : true,
+    }, {
+      onChunk: (t) => {
+        acc += t;
+        const pre = document.getElementById('detail-stream-pre');
+        if (pre) { pre.textContent = acc.slice(-5000); pre.scrollTop = pre.scrollHeight; }
+        st.setChars(acc.length);
+      },
     });
-    if (!res.ok) { toast('细纲生成失败', false); area.innerHTML = ''; return; }
+    st.stop();
+    if (!res || res.ok === false) { toast((res && res.error) || '细纲生成失败', false); area.innerHTML = ''; return; }
     const d = res.data;
     window._currentDetailedOutline = d;
     renderDetailedOutline(d);
     toast('细纲已生成', true);
   } catch (e) { toast('细纲生成失败: ' + e.message, false); area.innerHTML = ''; }
-  finally { window._detailBusy = false; }
+  finally { if (st) st.stop(); window._detailBusy = false; }
 }
 
 function editDetailedOutline() {
@@ -3225,14 +3538,41 @@ async function genChapterContent(chNum) {
   // 防重入：正文生成 + 写后状态结算耗时较长，避免重复点击并发请求
   if (window._writingBusy) return toast('正在写作中，请等待当前章节完成', false);
   window._writingBusy = true;
-  area.innerHTML = '<div class="loading" style="padding:10px">AI 正在生成正文，请耐心等待（1-3 分钟）...</div>';
+  area.innerHTML = `<div class="card" style="padding:12px;margin-top:8px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <span style="font-size:11px;font-weight:600;color:var(--green)">&#9997; AI 正在写第 ${chNum} 章…</span>
+      <span id="content-stream-meta" style="font-size:11px;color:var(--text3)"></span>
+    </div>
+    <pre id="content-stream-pre" style="max-height:260px;overflow:auto;white-space:pre-wrap;font-size:12px;line-height:1.7;color:var(--text2);margin:0"></pre>
+    <div id="content-stream-hint" style="font-size:11px;color:var(--text3);margin-top:6px">正文逐字回显中；写完后会自动生成摘要并结算故事状态</div>
+  </div>`;
   toast('正在生成正文...', 'loading');
+  let idleTimer = null;
+  const markIdle = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      const hint = document.getElementById('content-stream-hint');
+      if (hint) hint.textContent = '正文已写完，正在生成摘要并结算故事状态（还需 10-60 秒）…';
+    }, 4000);
+  };
+  let st = null;
   try {
-    const res = await api(`/books/${currentBook.id}/ai-generate/chapter-content`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ chapter_number: chNum, style_override: document.getElementById('ws-style-override')?.value || '' }),
+    let acc = '';
+    st = streamStatus(document.getElementById('content-stream-meta'), '正文');
+    const res = await streamApi(`/books/${currentBook.id}/ai-generate/chapter-content/stream`, {
+      chapter_number: chNum,
+      style_override: document.getElementById('ws-style-override')?.value || '',
+    }, {
+      onChunk: (t) => {
+        acc += t;
+        const pre = document.getElementById('content-stream-pre');
+        if (pre) { pre.textContent = acc; pre.scrollTop = pre.scrollHeight; }
+        st.setChars(acc.length);
+        markIdle();
+      },
     });
-    if (!res.ok) { toast('正文生成失败', false); area.innerHTML = ''; return; }
+    clearTimeout(idleTimer);
+    if (!res || res.ok === false) { toast('正文生成失败', false); area.innerHTML = ''; return; }
     const { content, chars } = res;
     window._lastWrittenChapter = chNum;
     const warningHtml = (res.warnings && res.warnings.length)
@@ -3254,7 +3594,7 @@ async function genChapterContent(chNum) {
     toast(`第 ${chNum} 章草稿已生成（${chars}字），状态已同步`, true);
     await loadBookData();
   } catch (e) { toast('正文生成失败: ' + e.message, false); area.innerHTML = `<div style="color:var(--red);font-size:12px;padding:8px">${esc(e.message)}</div>`; }
-  finally { window._writingBusy = false; }
+  finally { clearTimeout(idleTimer); if (st) st.stop(); window._writingBusy = false; }
 }
 
 async function promoteAndAudit(chNum) {
@@ -3445,7 +3785,7 @@ async function doExtractFromNovel() {
     window._aiResult = res.data;
     toast('世界观提取成功', true);
     document.getElementById('modal-import')?.remove();
-    step3Mode = 'form'; loadStep3Form(window._aiResult);
+    step3Mode = 'form'; loadStep3FormWith(window._aiResult);
     goStep(3);
   } catch (e) { toast('提取失败: ' + e.message, false); }
 }

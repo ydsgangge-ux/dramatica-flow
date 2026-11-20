@@ -184,6 +184,10 @@ class TimelineEvent:
     # 跨线程影响：该事件是否影响了其他线程的角色
     affected_threads: list[str] = field(default_factory=list)
     affected_characters: list[str] = field(default_factory=list)
+    # 事件分类（position/emotion/info/conflict/key/other）与关键节点标记
+    # 供时间线 UI 着色、筛选使用；缺失时前端按 action 关键词回退推断
+    type: str = "other"
+    is_key: bool = False
 
 
 # ── 世界观 ────────────────────────────────────────────────────────────────────

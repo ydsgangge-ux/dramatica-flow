@@ -325,6 +325,8 @@ class StateManager:
                 thread_id=te.get("thread_id", ""),
                 affected_threads=te.get("affected_threads", []),
                 affected_characters=te.get("affected_characters", []),
+                type=te.get("type", "other") or "other",
+                is_key=bool(te.get("is_key", False)),
             )
             ws.timeline.append(event)
 
